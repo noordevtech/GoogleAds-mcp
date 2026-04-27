@@ -13,7 +13,7 @@ from .auth import GoogleAdsAuthManager
 from .error_handler import ErrorHandler
 from .tools_campaigns import CampaignTools
 from .tools_reporting import ReportingTools
-from .utils import currency_to_micros, micros_to_currency
+from .utils import currency_to_micros, micros_to_currency, gaql_date_filter
 
 logger = structlog.get_logger(__name__)
 
@@ -138,20 +138,30 @@ class GoogleAdsTools:
                 },
             },
             "list_campaigns": {
-                "description": "List all campaigns with optional filters",
+                "description": (
+                    "List all campaigns with optional filters. date_range "
+                    "accepts a Google Ads named range, 'ALL_TIME', or a "
+                    "custom 'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.campaign_tools.list_campaigns,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "status": {"type": "string"},
                     "campaign_type": {"type": "string"},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
             "get_campaign": {
-                "description": "Get detailed campaign information",
+                "description": (
+                    "Get detailed campaign information. date_range accepts a "
+                    "Google Ads named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.campaign_tools.get_campaign,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "campaign_id": {"type": "string", "required": True},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
         }
@@ -181,12 +191,17 @@ class GoogleAdsTools:
                 },
             },
             "list_ad_groups": {
-                "description": "List ad groups with filters",
+                "description": (
+                    "List ad groups with filters. date_range accepts a "
+                    "Google Ads named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.list_ad_groups,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "campaign_id": {"type": "string"},
                     "status": {"type": "string"},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
         }
@@ -222,13 +237,18 @@ class GoogleAdsTools:
                 },
             },
             "list_ads": {
-                "description": "List ads with filters",
+                "description": (
+                    "List ads with filters. date_range accepts a Google Ads "
+                    "named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.list_ads,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string"},
                     "campaign_id": {"type": "string"},
                     "status": {"type": "string"},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
         }
@@ -478,12 +498,17 @@ class GoogleAdsTools:
                 },
             },
             "list_keywords": {
-                "description": "List keywords with performance data",
+                "description": (
+                    "List keywords with performance data. date_range accepts "
+                    "a Google Ads named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.list_keywords,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string"},
                     "campaign_id": {"type": "string"},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
                 },
             },
         }
@@ -561,7 +586,11 @@ class GoogleAdsTools:
         """Register reporting and analytics tools."""
         return {
             "get_campaign_performance": {
-                "description": "Get campaign performance metrics",
+                "description": (
+                    "Get campaign performance metrics. date_range accepts a "
+                    "Google Ads named range, 'ALL_TIME' for lifetime "
+                    "aggregates, or a custom 'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.reporting_tools.get_campaign_performance,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
@@ -571,7 +600,11 @@ class GoogleAdsTools:
                 },
             },
             "get_ad_group_performance": {
-                "description": "Get ad group performance metrics",
+                "description": (
+                    "Get ad group performance metrics. date_range accepts a "
+                    "Google Ads named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.reporting_tools.get_ad_group_performance,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
@@ -580,7 +613,11 @@ class GoogleAdsTools:
                 },
             },
             "get_keyword_performance": {
-                "description": "Get keyword performance metrics",
+                "description": (
+                    "Get keyword performance metrics. date_range accepts a "
+                    "Google Ads named range, 'ALL_TIME', or a custom "
+                    "'YYYY-MM-DD,YYYY-MM-DD' window."
+                ),
                 "handler": self.reporting_tools.get_keyword_performance,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
@@ -920,13 +957,32 @@ class GoogleAdsTools:
         customer_id: str,
         campaign_id: Optional[str] = None,
         status: Optional[str] = None,
+        date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """List ad groups with optional filters."""
+        """List ad groups with optional filters.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME' for
+        lifetime aggregates, or a custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
 
-            query = """
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if campaign_id:
+                where_parts.append(f"campaign.id = {campaign_id}")
+            if status:
+                where_parts.append(f"ad_group.status = '{status.upper()}'")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
                 SELECT
                     ad_group.id,
                     ad_group.name,
@@ -941,22 +997,12 @@ class GoogleAdsTools:
                     metrics.cost_micros,
                     metrics.conversions
                 FROM ad_group
-                WHERE segments.date DURING LAST_30_DAYS
+                {where_str}
+                ORDER BY ad_group.name
             """
 
-            conditions = []
-            if campaign_id:
-                conditions.append(f"campaign.id = {campaign_id}")
-            if status:
-                conditions.append(f"ad_group.status = '{status.upper()}'")
-
-            if conditions:
-                query += " AND " + " AND ".join(conditions)
-
-            query += " ORDER BY ad_group.name"
-
             response = googleads_service.search(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 query=query,
             )
 
@@ -984,6 +1030,7 @@ class GoogleAdsTools:
                 "success": True,
                 "ad_groups": ad_groups,
                 "count": len(ad_groups),
+                "date_range": date_label,
             }
 
         except GoogleAdsException as e:
@@ -1121,13 +1168,34 @@ class GoogleAdsTools:
         ad_group_id: Optional[str] = None,
         campaign_id: Optional[str] = None,
         status: Optional[str] = None,
+        date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """List ads with optional filters."""
+        """List ads with optional filters.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
 
-            query = """
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if ad_group_id:
+                where_parts.append(f"ad_group.id = {ad_group_id}")
+            if campaign_id:
+                where_parts.append(f"campaign.id = {campaign_id}")
+            if status:
+                where_parts.append(f"ad_group_ad.status = '{status.upper()}'")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
                 SELECT
                     ad_group_ad.ad.id,
                     ad_group_ad.ad.type,
@@ -1142,22 +1210,11 @@ class GoogleAdsTools:
                     metrics.cost_micros,
                     metrics.conversions
                 FROM ad_group_ad
-                WHERE segments.date DURING LAST_30_DAYS
+                {where_str}
             """
 
-            conditions = []
-            if ad_group_id:
-                conditions.append(f"ad_group.id = {ad_group_id}")
-            if campaign_id:
-                conditions.append(f"campaign.id = {campaign_id}")
-            if status:
-                conditions.append(f"ad_group_ad.status = '{status.upper()}'")
-
-            if conditions:
-                query += " AND " + " AND ".join(conditions)
-
             response = googleads_service.search(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 query=query,
             )
 
@@ -1188,6 +1245,7 @@ class GoogleAdsTools:
                 "success": True,
                 "ads": ads,
                 "count": len(ads),
+                "date_range": date_label,
             }
 
         except GoogleAdsException as e:
@@ -1806,13 +1864,32 @@ class GoogleAdsTools:
         customer_id: str,
         ad_group_id: Optional[str] = None,
         campaign_id: Optional[str] = None,
+        date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """List keywords with performance data."""
+        """List keywords with performance data.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
 
-            query = """
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if ad_group_id:
+                where_parts.append(f"ad_group.id = {ad_group_id}")
+            if campaign_id:
+                where_parts.append(f"campaign.id = {campaign_id}")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
                 SELECT
                     ad_group_criterion.criterion_id,
                     ad_group_criterion.keyword.text,
@@ -1830,20 +1907,11 @@ class GoogleAdsTools:
                     metrics.conversions,
                     metrics.average_cpc
                 FROM keyword_view
-                WHERE segments.date DURING LAST_30_DAYS
+                {where_str}
             """
 
-            conditions = []
-            if ad_group_id:
-                conditions.append(f"ad_group.id = {ad_group_id}")
-            if campaign_id:
-                conditions.append(f"campaign.id = {campaign_id}")
-
-            if conditions:
-                query += " AND " + " AND ".join(conditions)
-
             response = googleads_service.search(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 query=query,
             )
 
@@ -1879,6 +1947,7 @@ class GoogleAdsTools:
                 "success": True,
                 "keywords": keywords,
                 "count": len(keywords),
+                "date_range": date_label,
             }
 
         except GoogleAdsException as e:

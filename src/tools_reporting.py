@@ -7,7 +7,12 @@ import structlog
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-from .utils import micros_to_currency, format_date_range, derived_metrics
+from .utils import (
+    micros_to_currency,
+    format_date_range,
+    derived_metrics,
+    gaql_date_filter,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -51,11 +56,20 @@ class ReportingTools:
         date_range: str = "LAST_30_DAYS",
         metrics: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Get campaign performance metrics."""
+        """Get campaign performance metrics.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME' for
+        lifetime aggregates, or a custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
+
             # Default metrics if not specified. Note: friendly aliases like
             # 'conversion_rate' are translated to the real GAQL field name in
             # _GAQL_METRIC_ALIASES below.
@@ -69,6 +83,13 @@ class ReportingTools:
             gaql_metrics = [_GAQL_METRIC_ALIASES.get(m, m) for m in metrics]
             metrics_fields = ", ".join([f"metrics.{m}" for m in gaql_metrics])
 
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if campaign_id:
+                where_parts.append(f"campaign.id = {campaign_id}")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
             query = f"""
                 SELECT
                     campaign.id,
@@ -76,13 +97,9 @@ class ReportingTools:
                     campaign.status,
                     {metrics_fields}
                 FROM campaign
-                WHERE segments.date DURING {date_range}
+                {where_str}
+                ORDER BY metrics.cost_micros DESC
             """
-
-            if campaign_id:
-                query += f" AND campaign.id = {campaign_id}"
-
-            query += " ORDER BY metrics.cost_micros DESC"
 
             response = googleads_service.search(
                 customer_id=customer_id,
@@ -139,7 +156,7 @@ class ReportingTools:
 
             return {
                 "success": True,
-                "date_range": date_range,
+                "date_range": date_label,
                 "campaigns": campaigns,
                 "total_metrics": total_metrics,
                 "count": len(campaigns),
@@ -158,11 +175,27 @@ class ReportingTools:
         ad_group_id: Optional[str] = None,
         date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """Get ad group performance metrics."""
+        """Get ad group performance metrics.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
+
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if ad_group_id:
+                where_parts.append(f"ad_group.id = {ad_group_id}")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
             query = f"""
                 SELECT
                     ad_group.id,
@@ -180,13 +213,9 @@ class ReportingTools:
                     metrics.conversions_from_interactions_rate,
                     metrics.cost_per_conversion
                 FROM ad_group
-                WHERE segments.date DURING {date_range}
+                {where_str}
+                ORDER BY metrics.cost_micros DESC
             """
-            
-            if ad_group_id:
-                query += f" AND ad_group.id = {ad_group_id}"
-                
-            query += " ORDER BY metrics.cost_micros DESC"
             
             response = googleads_service.search(
                 customer_id=customer_id,
@@ -221,7 +250,7 @@ class ReportingTools:
                 
             return {
                 "success": True,
-                "date_range": date_range,
+                "date_range": date_label,
                 "ad_groups": ad_groups,
                 "count": len(ad_groups),
             }
@@ -239,11 +268,26 @@ class ReportingTools:
         ad_group_id: Optional[str] = None,
         date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """Get keyword performance metrics."""
+        """Get keyword performance metrics.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
+
+            where_parts = ["ad_group_criterion.type = 'KEYWORD'"]
+            if date_clause:
+                where_parts.append(date_clause)
+            if ad_group_id:
+                where_parts.append(f"ad_group.id = {ad_group_id}")
+
             query = f"""
                 SELECT
                     ad_group_criterion.keyword.text,
@@ -262,14 +306,9 @@ class ReportingTools:
                     metrics.average_cpc,
                     metrics.conversions_from_interactions_rate
                 FROM keyword_view
-                WHERE segments.date DURING {date_range}
-                    AND ad_group_criterion.type = 'KEYWORD'
+                WHERE {" AND ".join(where_parts)}
+                ORDER BY metrics.impressions DESC
             """
-            
-            if ad_group_id:
-                query += f" AND ad_group.id = {ad_group_id}"
-                
-            query += " ORDER BY metrics.impressions DESC"
             
             response = googleads_service.search(
                 customer_id=customer_id,
@@ -308,7 +347,7 @@ class ReportingTools:
                 
             return {
                 "success": True,
-                "date_range": date_range,
+                "date_range": date_label,
                 "keywords": keywords,
                 "count": len(keywords),
             }
@@ -416,11 +455,30 @@ class ReportingTools:
         ad_group_id: Optional[str] = None,
         date_range: str = "LAST_7_DAYS",
     ) -> Dict[str, Any]:
-        """Get search terms report."""
+        """Get search terms report.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window. Note: search_term_view data
+        retention is capped at ~24 months by Google regardless.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
+
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if campaign_id:
+                where_parts.append(f"campaign.id = {campaign_id}")
+            if ad_group_id:
+                where_parts.append(f"ad_group.id = {ad_group_id}")
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
             query = f"""
                 SELECT
                     search_term_view.search_term,
@@ -436,19 +494,10 @@ class ReportingTools:
                     metrics.ctr,
                     metrics.average_cpc
                 FROM search_term_view
-                WHERE segments.date DURING {date_range}
+                {where_str}
+                ORDER BY metrics.impressions DESC
+                LIMIT 100
             """
-            
-            conditions = []
-            if campaign_id:
-                conditions.append(f"campaign.id = {campaign_id}")
-            if ad_group_id:
-                conditions.append(f"ad_group.id = {ad_group_id}")
-                
-            if conditions:
-                query += " AND " + " AND ".join(conditions)
-                
-            query += " ORDER BY metrics.impressions DESC LIMIT 100"
             
             response = googleads_service.search(
                 customer_id=customer_id,
@@ -480,7 +529,7 @@ class ReportingTools:
                 
             return {
                 "success": True,
-                "date_range": date_range,
+                "date_range": date_label,
                 "search_terms": search_terms,
                 "count": len(search_terms),
             }
@@ -521,16 +570,13 @@ class ReportingTools:
             only_zero_conversions: If True, only return terms with 0 conversions
                 (the "find waste" filter).
         """
-        # Validate inputs against allow-lists / numeric ranges before
-        # splicing them into the GAQL query string.
-        if date_range not in _GAQL_DATE_RANGES:
-            return {
-                "success": False,
-                "error": (
-                    f"Unsupported date_range '{date_range}'. "
-                    f"Must be one of: {sorted(_GAQL_DATE_RANGES)}"
-                ),
-            }
+        # Validate date range; supports named ranges, ALL_TIME, and custom
+        # YYYY-MM-DD,YYYY-MM-DD windows. Note: search_term_view retention is
+        # capped at ~24 months by Google regardless of the requested range.
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
 
         try:
             min_impressions = max(0, int(min_impressions))
@@ -556,10 +602,9 @@ class ReportingTools:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
 
-            where_clauses = [
-                f"segments.date DURING {date_range}",
-                f"metrics.impressions >= {min_impressions}",
-            ]
+            where_clauses = [f"metrics.impressions >= {min_impressions}"]
+            if date_clause:
+                where_clauses.append(date_clause)
             if campaign_id_clean:
                 where_clauses.append(f"campaign.id = {campaign_id_clean}")
             if ad_group_id_clean:
@@ -632,7 +677,7 @@ class ReportingTools:
                 "search_terms": search_terms,
                 "count": len(search_terms),
                 "filters_applied": {
-                    "date_range": date_range,
+                    "date_range": date_label,
                     "campaign_id": campaign_id_clean,
                     "ad_group_id": ad_group_id_clean,
                     "min_impressions": min_impressions,
