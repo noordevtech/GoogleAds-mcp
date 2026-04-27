@@ -66,6 +66,16 @@ class GoogleAdsAuthManager:
         # Validate required fields
         if not self.config.get("developer_token"):
             raise AuthenticationError("Developer token is required")
+
+        # Warn (not fail) when MCC is missing — direct-access accounts still
+        # work without it; only child-account queries through an MCC need it.
+        if not self.config.get("login_customer_id"):
+            logger.warning(
+                "GOOGLE_ADS_LOGIN_CUSTOMER_ID is not set. "
+                "Queries against child accounts under an MCC will fail with "
+                "authorization_error.2 unless the authenticated user has "
+                "direct (non-manager) access to the queried customer_id."
+            )
             
     def _get_oauth_credentials(self) -> Credentials:
         """Get OAuth2 credentials, refreshing if necessary."""
@@ -127,21 +137,46 @@ class GoogleAdsAuthManager:
             
     def get_client(self, customer_id: Optional[str] = None) -> GoogleAdsClient:
         """Get an authenticated Google Ads client.
-        
+
+        Sets the gRPC ``login-customer-id`` header dynamically based on which
+        ``customer_id`` is being queried:
+
+        - If a manager (MCC) ID is configured via ``GOOGLE_ADS_LOGIN_CUSTOMER_ID``
+          and the queried ``customer_id`` is a child account, ``login_customer_id``
+          is set to the MCC so the API authorizes the call on the manager's
+          behalf.
+        - If the queried ``customer_id`` equals the MCC itself,
+          ``login_customer_id`` is omitted (some accounts trip when the login
+          equals the queried customer).
+        - If no MCC is configured, ``login_customer_id`` is omitted entirely;
+          the call works only when the authenticated user has direct access to
+          the queried account.
+
         Args:
-            customer_id: Optional customer ID to use. Defaults to login_customer_id.
-            
+            customer_id: The account being queried. Hyphens are stripped.
+
         Returns:
             Authenticated GoogleAdsClient instance.
         """
-        # Check cache
-        cache_key = customer_id or "default"
+        queried_cid = customer_id.replace("-", "").strip() if customer_id else None
+        mcc_raw = self.config.get("login_customer_id")
+        mcc_id = mcc_raw.replace("-", "").strip() if mcc_raw else None
+
+        if mcc_id and queried_cid and queried_cid != mcc_id:
+            effective_login = mcc_id
+        else:
+            effective_login = None
+
+        # Cache by the only thing that actually distinguishes a client: the
+        # login_customer_id header. In practice this means at most two cached
+        # clients (with-MCC-header and without).
+        cache_key = ("login", effective_login)
         if cached_client := self._client_cache.get(cache_key):
             return cached_client
-            
+
         # Determine auth method
         use_service_account = bool(self.config.get("service_account_path"))
-        
+
         try:
             if use_service_account:
                 credentials = self._get_service_account_credentials()
@@ -149,42 +184,30 @@ class GoogleAdsAuthManager:
             else:
                 credentials = self._get_oauth_credentials()
                 logger.info("Using OAuth2 authentication")
-                
-            # Build configuration for GoogleAdsClient
-            client_config = {
-                "developer_token": self.config["developer_token"],
-                "use_proto_plus": self.config.get("use_proto_plus", True),
-            }
-            
-            # Add customer IDs
-            if customer_id:
-                client_config["login_customer_id"] = customer_id.replace("-", "")
-            elif login_customer_id := self.config.get("login_customer_id"):
-                client_config["login_customer_id"] = login_customer_id.replace("-", "")
-                
-            if linked_customer_id := self.config.get("linked_customer_id"):
-                client_config["linked_customer_id"] = linked_customer_id.replace("-", "")
-                
-            # Create client
+
+            linked = self.config.get("linked_customer_id")
+            linked_id = linked.replace("-", "").strip() if linked else None
+
             client = GoogleAdsClient(
                 credentials=credentials,
-                developer_token=client_config["developer_token"],
-                login_customer_id=client_config.get("login_customer_id"),
-                linked_customer_id=client_config.get("linked_customer_id"),
-                use_proto_plus=client_config["use_proto_plus"],
+                developer_token=self.config["developer_token"],
+                login_customer_id=effective_login,
+                linked_customer_id=linked_id,
+                use_proto_plus=self.config.get("use_proto_plus", True),
             )
-            
-            # Cache the client
+
             self._client_cache[cache_key] = client
-            
+
             logger.info(
-                "Google Ads client created successfully",
-                customer_id=customer_id,
+                "Google Ads client created",
+                queried_customer_id=queried_cid,
+                login_customer_id=effective_login,
+                mcc_configured=bool(mcc_id),
                 auth_method="service_account" if use_service_account else "oauth2",
             )
-            
+
             return client
-            
+
         except Exception as e:
             logger.error(f"Failed to create Google Ads client: {e}")
             raise AuthenticationError(f"Failed to create client: {e}")
