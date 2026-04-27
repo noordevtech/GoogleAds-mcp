@@ -6,6 +6,7 @@ import structlog
 
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+from google.protobuf import field_mask_pb2
 
 from .utils import currency_to_micros, micros_to_currency, parse_date, derived_metrics
 
@@ -270,7 +271,7 @@ class CampaignTools:
                 
             # Set the update mask
             campaign_operation.update_mask.CopyFrom(
-                client.get_type("FieldMask")(paths=update_mask)
+                field_mask_pb2.FieldMask(paths=update_mask)
             )
             
             response = campaign_service.mutate_campaigns(

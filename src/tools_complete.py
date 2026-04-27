@@ -7,6 +7,7 @@ import structlog
 
 from mcp.types import Tool
 from google.ads.googleads.errors import GoogleAdsException
+from google.protobuf import field_mask_pb2
 
 from .auth import GoogleAdsAuthManager
 from .error_handler import ErrorHandler
@@ -251,11 +252,125 @@ class GoogleAdsTools:
                 },
             },
             "list_assets": {
-                "description": "List all assets",
+                "description": (
+                    "List assets with their content (text/phone/url/sitelink/etc.) "
+                    "and any account-level or campaign-level linkages."
+                ),
                 "handler": self.list_assets,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "asset_type": {"type": "string"},
+                },
+            },
+            "create_call_asset": {
+                "description": (
+                    "Create a call (phone-number) asset extension. Use "
+                    "link_asset_to_account or link_asset_to_campaign with "
+                    "field_type='CALL' to attach it."
+                ),
+                "handler": self.create_call_asset,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "phone_number": {"type": "string", "required": True},
+                    "country_code": {"type": "string", "default": "CA"},
+                    "call_conversion_reporting_state": {
+                        "type": "string",
+                        "default": "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
+                    },
+                    "name": {"type": "string"},
+                },
+            },
+            "create_location_asset": {
+                "description": (
+                    "Create a location asset linked to a Google Business "
+                    "Profile. Requires the customer to have a GBP linked."
+                ),
+                "handler": self.create_location_asset,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "business_profile_locations": {"type": "array"},
+                    "sync_level": {"type": "string", "default": "ACCOUNT"},
+                },
+            },
+            "create_sitelink_asset": {
+                "description": (
+                    "Create a sitelink asset (clickable subpage link). "
+                    "link_text max 25 chars; description1/2 max 35 chars each."
+                ),
+                "handler": self.create_sitelink_asset,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "link_text": {"type": "string", "required": True},
+                    "final_urls": {"type": "array", "required": True},
+                    "description1": {"type": "string"},
+                    "description2": {"type": "string"},
+                },
+            },
+            "create_callout_asset": {
+                "description": (
+                    "Create a callout asset (non-clickable trust signal). "
+                    "Max 25 characters. Recommend creating 6-10 per account."
+                ),
+                "handler": self.create_callout_asset,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "callout_text": {"type": "string", "required": True},
+                },
+            },
+            "create_structured_snippet_asset": {
+                "description": (
+                    "Create a structured snippet asset (categorized list). "
+                    "Header must come from Google's approved list (Services, "
+                    "Brands, Insurance coverage, etc.). 3-10 values, each "
+                    "max 25 chars."
+                ),
+                "handler": self.create_structured_snippet_asset,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "header": {"type": "string", "required": True},
+                    "values": {"type": "array", "required": True},
+                },
+            },
+            "link_asset_to_campaign": {
+                "description": (
+                    "Attach an existing asset to a campaign with a field_type "
+                    "(CALL, SITELINK, CALLOUT, STRUCTURED_SNIPPET, LOCATION, ...)."
+                ),
+                "handler": self.link_asset_to_campaign,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string", "required": True},
+                    "asset_resource_name": {"type": "string", "required": True},
+                    "field_type": {"type": "string", "required": True},
+                },
+            },
+            "unlink_asset_from_campaign": {
+                "description": "Detach a campaign-level asset link by its CampaignAsset resource name.",
+                "handler": self.unlink_asset_from_campaign,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_asset_resource_name": {"type": "string", "required": True},
+                },
+            },
+            "link_asset_to_account": {
+                "description": (
+                    "Attach an existing asset at the account level "
+                    "(applies to all current and future campaigns). "
+                    "Typically the right choice for call/location/sitelink/callout."
+                ),
+                "handler": self.link_asset_to_account,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "asset_resource_name": {"type": "string", "required": True},
+                    "field_type": {"type": "string", "required": True},
+                },
+            },
+            "unlink_asset_from_account": {
+                "description": "Detach an account-level asset link by its CustomerAsset resource name.",
+                "handler": self.unlink_asset_from_account,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "customer_asset_resource_name": {"type": "string", "required": True},
                 },
             },
         }
@@ -661,7 +776,7 @@ class GoogleAdsTools:
                 update_mask.append("cpc_bid_micros")
 
             operation.update_mask.CopyFrom(
-                client.get_type("FieldMask")(paths=update_mask)
+                field_mask_pb2.FieldMask(paths=update_mask)
             )
 
             ad_group_service.mutate_ad_groups(
@@ -1048,7 +1163,14 @@ class GoogleAdsTools:
         customer_id: str,
         asset_type: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List assets with an optional type filter."""
+        """List assets with their content (text/phone/url) and linkages.
+
+        Surfaces both account-level (CustomerAsset) and campaign-level
+        (CampaignAsset) attachments so the caller can see at a glance which
+        extensions are live and where. Filter by asset_type to narrow results
+        (CALL, SITELINK, CALLOUT, STRUCTURED_SNIPPET, LOCATION, IMAGE, TEXT,
+        etc.).
+        """
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
@@ -1058,7 +1180,17 @@ class GoogleAdsTools:
                     asset.id,
                     asset.name,
                     asset.type,
-                    asset.resource_name
+                    asset.resource_name,
+                    asset.text_asset.text,
+                    asset.call_asset.phone_number,
+                    asset.call_asset.country_code,
+                    asset.sitelink_asset.link_text,
+                    asset.sitelink_asset.description1,
+                    asset.sitelink_asset.description2,
+                    asset.callout_asset.callout_text,
+                    asset.structured_snippet_asset.header,
+                    asset.structured_snippet_asset.values,
+                    asset.final_urls
                 FROM asset
             """
 
@@ -1066,19 +1198,89 @@ class GoogleAdsTools:
                 query += f" WHERE asset.type = '{asset_type.upper()}'"
 
             response = googleads_service.search(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 query=query,
             )
 
-            assets = []
+            assets_by_rn: Dict[str, Dict[str, Any]] = {}
             for row in response:
-                assets.append({
-                    "id": str(row.asset.id),
-                    "name": row.asset.name,
-                    "type": row.asset.type_.name,
-                    "resource_name": row.asset.resource_name,
-                })
+                content: Dict[str, Any] = {}
+                a = row.asset
+                t = a.type_.name
+                if t == "TEXT":
+                    content = {"text": a.text_asset.text}
+                elif t == "CALL":
+                    content = {
+                        "phone_number": a.call_asset.phone_number,
+                        "country_code": a.call_asset.country_code,
+                    }
+                elif t == "SITELINK":
+                    content = {
+                        "link_text": a.sitelink_asset.link_text,
+                        "description1": a.sitelink_asset.description1,
+                        "description2": a.sitelink_asset.description2,
+                        "final_urls": list(a.final_urls),
+                    }
+                elif t == "CALLOUT":
+                    content = {"callout_text": a.callout_asset.callout_text}
+                elif t == "STRUCTURED_SNIPPET":
+                    content = {
+                        "header": a.structured_snippet_asset.header,
+                        "values": list(a.structured_snippet_asset.values),
+                    }
 
+                assets_by_rn[a.resource_name] = {
+                    "id": str(a.id),
+                    "name": a.name,
+                    "type": t,
+                    "resource_name": a.resource_name,
+                    "content": content,
+                    "linked_to_account": [],
+                    "linked_to_campaigns": [],
+                }
+
+            # Account-level linkages
+            try:
+                ca_response = googleads_service.search(
+                    customer_id=customer_id.replace("-", "").strip(),
+                    query=(
+                        "SELECT customer_asset.asset, customer_asset.field_type, "
+                        "customer_asset.status FROM customer_asset"
+                    ),
+                )
+                for row in ca_response:
+                    rn = row.customer_asset.asset
+                    if rn in assets_by_rn:
+                        assets_by_rn[rn]["linked_to_account"].append({
+                            "field_type": row.customer_asset.field_type.name,
+                            "status": row.customer_asset.status.name,
+                        })
+            except GoogleAdsException as e:
+                logger.warning(f"Failed to fetch customer_asset linkages: {e}")
+
+            # Campaign-level linkages
+            try:
+                cap_response = googleads_service.search(
+                    customer_id=customer_id.replace("-", "").strip(),
+                    query=(
+                        "SELECT campaign_asset.asset, campaign_asset.campaign, "
+                        "campaign_asset.field_type, campaign_asset.status, "
+                        "campaign.name FROM campaign_asset"
+                    ),
+                )
+                for row in cap_response:
+                    rn = row.campaign_asset.asset
+                    if rn in assets_by_rn:
+                        assets_by_rn[rn]["linked_to_campaigns"].append({
+                            "campaign_id": row.campaign_asset.campaign.split("/")[-1],
+                            "campaign_name": row.campaign.name,
+                            "field_type": row.campaign_asset.field_type.name,
+                            "status": row.campaign_asset.status.name,
+                        })
+            except GoogleAdsException as e:
+                logger.warning(f"Failed to fetch campaign_asset linkages: {e}")
+
+            assets = list(assets_by_rn.values())
             return {
                 "success": True,
                 "assets": assets,
@@ -1168,7 +1370,7 @@ class GoogleAdsTools:
                 update_mask.append("name")
 
             operation.update_mask.CopyFrom(
-                client.get_type("FieldMask")(paths=update_mask)
+                field_mask_pb2.FieldMask(paths=update_mask)
             )
 
             budget_service.mutate_campaign_budgets(
@@ -1647,4 +1849,480 @@ class GoogleAdsTools:
             return self.error_handler.format_error_response(e)
         except Exception as e:
             logger.error(f"Unexpected error getting change history: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Asset extensions (call / location / sitelink / callout / snippet)
+    # ------------------------------------------------------------------
+
+    _STRUCTURED_SNIPPET_HEADERS = frozenset({
+        "Amenities", "Brands", "Courses", "Degree programs", "Destinations",
+        "Featured hotels", "Insurance coverage", "Models", "Neighborhoods",
+        "Service catalog", "Services", "Shows", "Styles", "Types",
+    })
+
+    _ASSET_FIELD_TYPES = frozenset({
+        "CALL", "LOCATION", "SITELINK", "CALLOUT", "STRUCTURED_SNIPPET",
+        "PRICE", "PROMOTION", "MOBILE_APP", "BUSINESS_NAME", "BUSINESS_LOGO",
+        "AD_IMAGE", "MARKETING_IMAGE", "HEADLINE", "DESCRIPTION", "VIDEO",
+        "YOUTUBE_VIDEO", "BOOK_ON_GOOGLE", "LEAD_FORM", "HOTEL_CALLOUT",
+        "AD_LANDSCAPE_IMAGE", "AD_PORTRAIT_IMAGE",
+    })
+
+    @staticmethod
+    def _normalize_phone_e164(phone: str) -> str:
+        """Normalize a phone string to E.164 (e.g., +15145550199).
+
+        Accepts inputs with separators or whitespace; preserves a leading +.
+        Raises ValueError if the result isn't a valid E.164 number.
+        """
+        import re
+        cleaned = "".join(c for c in str(phone) if c.isdigit() or c == "+")
+        if not cleaned.startswith("+"):
+            cleaned = "+" + cleaned
+        if not re.match(r"^\+[1-9]\d{1,14}$", cleaned):
+            raise ValueError(
+                f"phone_number must be in E.164 format (e.g., +15145550199), got {phone!r}"
+            )
+        return cleaned
+
+    @classmethod
+    def _validate_asset_field_type(cls, field_type: str) -> str:
+        ft = (field_type or "").upper()
+        if ft not in cls._ASSET_FIELD_TYPES:
+            raise ValueError(
+                f"field_type {field_type!r} is not supported. Use one of: "
+                f"{sorted(cls._ASSET_FIELD_TYPES)}"
+            )
+        return ft
+
+    async def create_call_asset(
+        self,
+        customer_id: str,
+        phone_number: str,
+        country_code: str = "CA",
+        call_conversion_reporting_state: str = "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION",
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a call asset (phone-number extension).
+
+        The asset itself is account-level; use link_asset_to_account or
+        link_asset_to_campaign with field_type='CALL' to attach it.
+        """
+        try:
+            phone = self._normalize_phone_e164(phone_number)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            asset_service = client.get_service("AssetService")
+
+            operation = client.get_type("AssetOperation")
+            asset = operation.create
+            if name:
+                asset.name = name
+            asset.type_ = client.enums.AssetTypeEnum.CALL
+            asset.call_asset.phone_number = phone
+            asset.call_asset.country_code = country_code.upper()
+
+            reporting_enum = client.enums.CallConversionReportingStateEnum
+            reporting_map = {
+                "DISABLED": reporting_enum.DISABLED,
+                "USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION": reporting_enum.USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION,
+                "USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION": reporting_enum.USE_RESOURCE_LEVEL_CALL_CONVERSION_ACTION,
+            }
+            asset.call_asset.call_conversion_reporting_state = reporting_map.get(
+                call_conversion_reporting_state.upper(),
+                reporting_enum.USE_ACCOUNT_LEVEL_CALL_CONVERSION_ACTION,
+            )
+
+            response = asset_service.mutate_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "asset_resource_name": resource_name,
+                "asset_id": resource_name.split("/")[-1],
+                "phone_number": phone,
+                "country_code": country_code.upper(),
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to create call asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating call asset: {e}")
+            raise
+
+    async def create_location_asset(
+        self,
+        customer_id: str,
+        business_profile_locations: Optional[List[str]] = None,
+        sync_level: str = "ACCOUNT",
+    ) -> Dict[str, Any]:
+        """Create a location asset linked to a Google Business Profile.
+
+        The customer must have a GBP linked under Tools > Linked accounts >
+        Google Business Profile in the Google Ads UI. ``business_profile_locations``
+        is a list of GBP location resource names; if omitted, all linked
+        locations are used.
+        """
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            asset_service = client.get_service("AssetService")
+
+            operation = client.get_type("AssetOperation")
+            asset = operation.create
+            asset.type_ = client.enums.AssetTypeEnum.LOCATION
+
+            if business_profile_locations:
+                for rn in business_profile_locations:
+                    asset.location_asset.business_profile_locations.append(rn)
+
+            response = asset_service.mutate_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "asset_resource_name": resource_name,
+                "asset_id": resource_name.split("/")[-1],
+                "sync_level": sync_level.upper(),
+            }
+
+        except GoogleAdsException as e:
+            # Detect the common "no GBP linked" failure and produce a clearer
+            # remediation message.
+            err_text = str(e).lower()
+            if "business" in err_text or "place" in err_text or "location" in err_text:
+                return {
+                    "success": False,
+                    "error": (
+                        "No Google Business Profile linked. Link via the Google "
+                        "Ads UI: Tools > Linked accounts > Google Business Profile."
+                    ),
+                    "raw_error": self.error_handler.format_error_response(e),
+                }
+            logger.error(f"Failed to create location asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating location asset: {e}")
+            raise
+
+    async def create_sitelink_asset(
+        self,
+        customer_id: str,
+        link_text: str,
+        final_urls: List[str],
+        description1: Optional[str] = None,
+        description2: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a sitelink asset (clickable subpage link under the ad)."""
+        if not link_text or len(link_text) > 25:
+            return {"success": False, "error": "link_text is required and must be 1-25 characters"}
+        if not final_urls:
+            return {"success": False, "error": "final_urls must contain at least one URL"}
+        if description1 and len(description1) > 35:
+            return {"success": False, "error": "description1 must be at most 35 characters"}
+        if description2 and len(description2) > 35:
+            return {"success": False, "error": "description2 must be at most 35 characters"}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            asset_service = client.get_service("AssetService")
+
+            operation = client.get_type("AssetOperation")
+            asset = operation.create
+            asset.type_ = client.enums.AssetTypeEnum.SITELINK
+            asset.sitelink_asset.link_text = link_text
+            if description1:
+                asset.sitelink_asset.description1 = description1
+            if description2:
+                asset.sitelink_asset.description2 = description2
+            for url in final_urls:
+                asset.final_urls.append(url)
+
+            response = asset_service.mutate_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "asset_resource_name": resource_name,
+                "asset_id": resource_name.split("/")[-1],
+                "link_text": link_text,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to create sitelink asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating sitelink asset: {e}")
+            raise
+
+    async def create_callout_asset(
+        self,
+        customer_id: str,
+        callout_text: str,
+    ) -> Dict[str, Any]:
+        """Create a callout asset (non-clickable trust signal)."""
+        if not callout_text or len(callout_text) > 25:
+            return {"success": False, "error": "callout_text is required and must be 1-25 characters"}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            asset_service = client.get_service("AssetService")
+
+            operation = client.get_type("AssetOperation")
+            asset = operation.create
+            asset.type_ = client.enums.AssetTypeEnum.CALLOUT
+            asset.callout_asset.callout_text = callout_text
+
+            response = asset_service.mutate_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "asset_resource_name": resource_name,
+                "asset_id": resource_name.split("/")[-1],
+                "callout_text": callout_text,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to create callout asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating callout asset: {e}")
+            raise
+
+    async def create_structured_snippet_asset(
+        self,
+        customer_id: str,
+        header: str,
+        values: List[str],
+    ) -> Dict[str, Any]:
+        """Create a structured snippet asset (categorized value list).
+
+        ``header`` must be one of Google's approved headers (e.g., 'Services',
+        'Brands'). ``values`` must contain 3-10 items, each at most 25 chars.
+        """
+        # Match against approved headers case-insensitively but preserve the
+        # canonical capitalization that Google expects.
+        canonical = next(
+            (h for h in self._STRUCTURED_SNIPPET_HEADERS if h.lower() == (header or "").lower()),
+            None,
+        )
+        if not canonical:
+            return {
+                "success": False,
+                "error": (
+                    f"header {header!r} is not a Google-approved header. Use one of: "
+                    f"{sorted(self._STRUCTURED_SNIPPET_HEADERS)}"
+                ),
+            }
+        if not values or len(values) < 3 or len(values) > 10:
+            return {"success": False, "error": "values must contain 3-10 items"}
+        for v in values:
+            if not v or len(v) > 25:
+                return {
+                    "success": False,
+                    "error": f"each value must be 1-25 characters; got {v!r}",
+                }
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            asset_service = client.get_service("AssetService")
+
+            operation = client.get_type("AssetOperation")
+            asset = operation.create
+            asset.type_ = client.enums.AssetTypeEnum.STRUCTURED_SNIPPET
+            asset.structured_snippet_asset.header = canonical
+            for value in values:
+                asset.structured_snippet_asset.values.append(value)
+
+            response = asset_service.mutate_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "asset_resource_name": resource_name,
+                "asset_id": resource_name.split("/")[-1],
+                "header": canonical,
+                "values": list(values),
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to create structured snippet asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating structured snippet asset: {e}")
+            raise
+
+    async def link_asset_to_campaign(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        asset_resource_name: str,
+        field_type: str,
+    ) -> Dict[str, Any]:
+        """Attach an existing asset to a specific campaign with a field_type."""
+        try:
+            ft = self._validate_asset_field_type(field_type)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            campaign_asset_service = client.get_service("CampaignAssetService")
+
+            operation = client.get_type("CampaignAssetOperation")
+            link = operation.create
+            link.asset = asset_resource_name
+            link.campaign = (
+                f"customers/{customer_id.replace('-', '').strip()}/campaigns/{campaign_id}"
+            )
+            link.field_type = getattr(client.enums.AssetFieldTypeEnum, ft)
+
+            response = campaign_asset_service.mutate_campaign_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "campaign_asset_resource_name": response.results[0].resource_name,
+                "campaign_id": campaign_id,
+                "asset_resource_name": asset_resource_name,
+                "field_type": ft,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to link asset to campaign: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error linking asset to campaign: {e}")
+            raise
+
+    async def unlink_asset_from_campaign(
+        self,
+        customer_id: str,
+        campaign_asset_resource_name: str,
+    ) -> Dict[str, Any]:
+        """Detach a campaign-level asset link.
+
+        ``campaign_asset_resource_name`` is the resource_name returned by
+        link_asset_to_campaign (or surfaced in list_assets under
+        linked_to_campaigns).
+        """
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            campaign_asset_service = client.get_service("CampaignAssetService")
+
+            operation = client.get_type("CampaignAssetOperation")
+            operation.remove = campaign_asset_resource_name
+
+            response = campaign_asset_service.mutate_campaign_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "removed": response.results[0].resource_name,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to unlink campaign asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error unlinking campaign asset: {e}")
+            raise
+
+    async def link_asset_to_account(
+        self,
+        customer_id: str,
+        asset_resource_name: str,
+        field_type: str,
+    ) -> Dict[str, Any]:
+        """Attach an existing asset at the account level (CustomerAsset).
+
+        Account-level assets apply to all current and future campaigns and
+        are typically the right choice for call extensions, location
+        extensions, sitelinks, and callouts.
+        """
+        try:
+            ft = self._validate_asset_field_type(field_type)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            customer_asset_service = client.get_service("CustomerAssetService")
+
+            operation = client.get_type("CustomerAssetOperation")
+            link = operation.create
+            link.asset = asset_resource_name
+            link.field_type = getattr(client.enums.AssetFieldTypeEnum, ft)
+
+            response = customer_asset_service.mutate_customer_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "customer_asset_resource_name": response.results[0].resource_name,
+                "asset_resource_name": asset_resource_name,
+                "field_type": ft,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to link asset to account: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error linking asset to account: {e}")
+            raise
+
+    async def unlink_asset_from_account(
+        self,
+        customer_id: str,
+        customer_asset_resource_name: str,
+    ) -> Dict[str, Any]:
+        """Detach an account-level asset link by its CustomerAsset resource name."""
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            customer_asset_service = client.get_service("CustomerAssetService")
+
+            operation = client.get_type("CustomerAssetOperation")
+            operation.remove = customer_asset_resource_name
+
+            response = customer_asset_service.mutate_customer_assets(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "removed": response.results[0].resource_name,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to unlink customer asset: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error unlinking customer asset: {e}")
             raise
