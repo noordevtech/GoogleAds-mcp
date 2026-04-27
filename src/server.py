@@ -16,7 +16,7 @@ import structlog
 
 from .auth import GoogleAdsAuthManager, AuthenticationError
 from .error_handler import ErrorHandler, RetryableGoogleAdsClient
-from .tools import GoogleAdsTools
+from .tools_complete import GoogleAdsTools
 from .utils import format_currency, format_date_range, parse_date
 
 logger = structlog.get_logger(__name__)
