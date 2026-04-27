@@ -8,7 +8,13 @@ from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 from google.protobuf import field_mask_pb2
 
-from .utils import currency_to_micros, micros_to_currency, parse_date, derived_metrics
+from .utils import (
+    currency_to_micros,
+    micros_to_currency,
+    parse_date,
+    derived_metrics,
+    gaql_date_filter,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -306,13 +312,36 @@ class CampaignTools:
         customer_id: str,
         status: Optional[str] = None,
         campaign_type: Optional[str] = None,
+        date_range: str = "LAST_30_DAYS",
     ) -> Dict[str, Any]:
-        """List all campaigns with optional filters."""
+        """List all campaigns with optional filters.
+
+        ``date_range`` accepts a Google Ads named range (LAST_30_DAYS,
+        THIS_MONTH, ...), 'ALL_TIME' for lifetime aggregates, or a custom
+        'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
-            query = """
+
+            where_parts = []
+            if date_clause:
+                where_parts.append(date_clause)
+            if status:
+                where_parts.append(f"campaign.status = '{status.upper()}'")
+            if campaign_type:
+                where_parts.append(
+                    f"campaign.advertising_channel_type = '{campaign_type.upper()}'"
+                )
+
+            where_str = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
                 SELECT
                     campaign.id,
                     campaign.name,
@@ -326,25 +355,15 @@ class CampaignTools:
                     metrics.cost_micros,
                     metrics.conversions
                 FROM campaign
-                WHERE segments.date DURING LAST_30_DAYS
+                {where_str}
+                ORDER BY campaign.name
             """
-            
-            conditions = []
-            if status:
-                conditions.append(f"campaign.status = '{status.upper()}'")
-            if campaign_type:
-                conditions.append(f"campaign.advertising_channel_type = '{campaign_type.upper()}'")
-                
-            if conditions:
-                query += " AND " + " AND ".join(conditions)
-                
-            query += " ORDER BY campaign.name"
-            
+
             response = googleads_service.search(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 query=query,
             )
-            
+
             campaigns = []
             for row in response:
                 campaigns.append({
@@ -361,11 +380,12 @@ class CampaignTools:
                         "conversions": row.metrics.conversions,
                     },
                 })
-                
+
             return {
                 "success": True,
                 "campaigns": campaigns,
                 "count": len(campaigns),
+                "date_range": date_label,
             }
             
         except GoogleAdsException as e:
@@ -375,12 +395,30 @@ class CampaignTools:
             logger.error(f"Unexpected error listing campaigns: {e}")
             raise
             
-    async def get_campaign(self, customer_id: str, campaign_id: str) -> Dict[str, Any]:
-        """Get detailed campaign information."""
+    async def get_campaign(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        date_range: str = "LAST_30_DAYS",
+    ) -> Dict[str, Any]:
+        """Get detailed campaign information.
+
+        ``date_range`` accepts a Google Ads named range, 'ALL_TIME', or a
+        custom 'YYYY-MM-DD,YYYY-MM-DD' window.
+        """
+        try:
+            date_clause, date_label = gaql_date_filter(date_range)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         try:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
-            
+
+            where_parts = [f"campaign.id = {campaign_id}"]
+            if date_clause:
+                where_parts.append(date_clause)
+
             query = f"""
                 SELECT
                     campaign.id,
@@ -407,8 +445,7 @@ class CampaignTools:
                     metrics.ctr,
                     metrics.conversions_from_interactions_rate
                 FROM campaign
-                WHERE campaign.id = {campaign_id}
-                    AND segments.date DURING LAST_30_DAYS
+                WHERE {" AND ".join(where_parts)}
             """
             
             response = googleads_service.search(
@@ -425,6 +462,7 @@ class CampaignTools:
                 derived = derived_metrics(impressions, clicks, cost, conversions, conv_value)
                 return {
                     "success": True,
+                    "date_range": date_label,
                     "campaign": {
                         "id": str(row.campaign.id),
                         "name": row.campaign.name,

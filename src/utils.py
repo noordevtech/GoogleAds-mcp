@@ -317,6 +317,76 @@ def batch_list(items: list, batch_size: int = 1000) -> list:
     return batches
 
 
+# Google Ads GAQL named date ranges (the only ones the API accepts after
+# DURING). Note: "ALL_TIME" is intentionally NOT in this set because GAQL
+# does not accept it - the helper below handles ALL_TIME by omitting the
+# date filter entirely.
+_GAQL_NAMED_DATE_RANGES = frozenset({
+    "TODAY", "YESTERDAY",
+    "LAST_7_DAYS", "LAST_14_DAYS", "LAST_30_DAYS", "LAST_90_DAYS",
+    "THIS_MONTH", "LAST_MONTH",
+    "THIS_WEEK_MON_TODAY", "THIS_WEEK_SUN_TODAY",
+    "LAST_WEEK_MON_SUN", "LAST_WEEK_SUN_SAT",
+    "LAST_BUSINESS_WEEK",
+    "THIS_QUARTER", "LAST_QUARTER",
+    "THIS_YEAR", "LAST_YEAR",
+})
+
+
+def gaql_date_filter(date_range: Optional[str]) -> Tuple[str, str]:
+    """Translate a date_range input into a GAQL clause + a normalized label.
+
+    Returns ``(clause, label)`` where ``clause`` is splice-ready GAQL like
+    ``segments.date DURING LAST_30_DAYS`` or ``segments.date BETWEEN '2024-01-01' AND '2024-12-31'``,
+    and ``label`` is the normalized form for the response envelope.
+
+    Three input forms are accepted:
+      - A Google Ads named range (LAST_30_DAYS, THIS_MONTH, ...).
+      - "ALL_TIME": returns ``("", "ALL_TIME")`` so the caller skips the
+        ``segments.date`` filter and the API returns lifetime aggregates.
+        Note that some resources (e.g. search_term_view) cap retention to
+        ~24 months regardless.
+      - A custom range "YYYY-MM-DD,YYYY-MM-DD" (or with whitespace).
+
+    Raises ValueError on an unknown named range or malformed custom range.
+    """
+    if not date_range:
+        raise ValueError("date_range cannot be empty")
+
+    raw = str(date_range).strip()
+    upper = raw.upper().replace("-", "_")
+
+    if upper == "ALL_TIME":
+        return ("", "ALL_TIME")
+
+    # Custom YYYY-MM-DD,YYYY-MM-DD range
+    if "," in raw:
+        parts = [p.strip() for p in raw.split(",", 1)]
+        if len(parts) != 2:
+            raise ValueError(
+                f"custom date_range must be 'YYYY-MM-DD,YYYY-MM-DD', got {date_range!r}"
+            )
+        start = parse_date(parts[0])
+        end = parse_date(parts[1])
+        if start > end:
+            raise ValueError(
+                f"custom date_range start ({start}) must be on or before end ({end})"
+            )
+        clause = (
+            f"segments.date BETWEEN '{start.isoformat()}' AND '{end.isoformat()}'"
+        )
+        return (clause, f"{start.isoformat()},{end.isoformat()}")
+
+    # Named GAQL range
+    if upper not in _GAQL_NAMED_DATE_RANGES:
+        raise ValueError(
+            f"Unsupported date_range {date_range!r}. Use one of: ALL_TIME, "
+            f"a YYYY-MM-DD,YYYY-MM-DD custom range, or a named range "
+            f"({sorted(_GAQL_NAMED_DATE_RANGES)})."
+        )
+    return (f"segments.date DURING {upper}", upper)
+
+
 def derived_metrics(
     impressions: Union[int, float],
     clicks: Union[int, float],
