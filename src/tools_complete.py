@@ -58,10 +58,13 @@ class GoogleAdsTools:
         
         # Reporting & Analytics (from ReportingTools)
         tools.update(self._register_reporting_tools())
-        
+
+        # Conversion actions
+        tools.update(self._register_conversion_action_tools())
+
         # Advanced Features
         tools.update(self._register_advanced_tools())
-        
+
         return tools
         
     def _register_account_tools(self) -> Dict[str, Dict[str, Any]]:
@@ -411,22 +414,67 @@ class GoogleAdsTools:
         """Register keyword management tools."""
         return {
             "add_keywords": {
-                "description": "Add keywords to an ad group",
+                "description": (
+                    "Add keywords to an ad group. Plain strings default to "
+                    "PHRASE match type (NOT BROAD - BROAD-by-default is the "
+                    "single largest source of wasted spend). Pass objects "
+                    "{text, match_type, cpc_bid_micros?, final_url?} for "
+                    "explicit control."
+                ),
                 "handler": self.add_keywords,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string", "required": True},
                     "keywords": {"type": "array", "required": True},
+                    "default_match_type": {"type": "string", "default": "PHRASE"},
+                },
+            },
+            "update_keyword": {
+                "description": (
+                    "Update a keyword criterion's status, bid, or final URL. "
+                    "Only fields explicitly provided are changed."
+                ),
+                "handler": self.update_keyword,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "criterion_resource_name": {"type": "string", "required": True},
+                    "status": {"type": "string"},
+                    "cpc_bid_micros": {"type": "integer"},
+                    "final_url": {"type": "string"},
+                },
+            },
+            "remove_keywords": {
+                "description": "Remove keyword criteria by full resource name (batched).",
+                "handler": self.remove_keywords,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "criterion_resource_names": {"type": "array", "required": True},
                 },
             },
             "add_negative_keywords": {
-                "description": "Add negative keywords (campaign or ad group level)",
+                "description": (
+                    "Add negative keywords (campaign or ad-group level). "
+                    "Plain strings default to PHRASE match type. Pass objects "
+                    "{text, match_type} for explicit control."
+                ),
                 "handler": self.add_negative_keywords,
                 "parameters": {
                     "customer_id": {"type": "string", "required": True},
                     "keywords": {"type": "array", "required": True},
                     "campaign_id": {"type": "string"},
                     "ad_group_id": {"type": "string"},
+                    "default_match_type": {"type": "string", "default": "PHRASE"},
+                },
+            },
+            "remove_negative_keywords": {
+                "description": (
+                    "Remove negative-keyword criteria by full resource name. "
+                    "Routes to campaign vs ad-group service automatically."
+                ),
+                "handler": self.remove_negative_keywords,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "criterion_resource_names": {"type": "array", "required": True},
                 },
             },
             "list_keywords": {
@@ -436,6 +484,75 @@ class GoogleAdsTools:
                     "customer_id": {"type": "string", "required": True},
                     "ad_group_id": {"type": "string"},
                     "campaign_id": {"type": "string"},
+                },
+            },
+        }
+
+    def _register_conversion_action_tools(self) -> Dict[str, Dict[str, Any]]:
+        """Register conversion-action introspection and management tools."""
+        return {
+            "list_conversion_actions": {
+                "description": (
+                    "List the account's conversion actions with a derived "
+                    "summary block (phone_call_actions, website_actions, "
+                    "active_count, in_conversions_metric_count). Primary "
+                    "tool for verifying conversion-tracking setup before "
+                    "scaling spend."
+                ),
+                "handler": self.list_conversion_actions,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "status": {"type": "string"},
+                    "type": {"type": "string"},
+                },
+            },
+            "get_conversion_action": {
+                "description": (
+                    "Get full details for one conversion action, including "
+                    "tag_snippets (the JS snippet to install on the site)."
+                ),
+                "handler": self.get_conversion_action,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "conversion_action_id": {"type": "string", "required": True},
+                },
+            },
+            "create_conversion_action": {
+                "description": (
+                    "Create a conversion action. Most common use: spinning "
+                    "up a 'Calls from ads' action on accounts that lack one "
+                    "(category=PHONE_CALL_LEAD, type=AD_CALL or WEBSITE_CALL)."
+                ),
+                "handler": self.create_conversion_action,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "name": {"type": "string", "required": True},
+                    "category": {"type": "string", "required": True},
+                    "type": {"type": "string", "default": "WEBPAGE"},
+                    "default_value": {"type": "number"},
+                    "always_use_default_value": {"type": "boolean", "default": True},
+                    "counting_type": {"type": "string", "default": "ONE_PER_CLICK"},
+                    "click_through_lookback_days": {"type": "integer", "default": 30},
+                    "phone_call_duration_seconds": {"type": "integer", "default": 60},
+                    "include_in_conversions_metric": {"type": "boolean", "default": True},
+                    "attribution_model": {"type": "string", "default": "GOOGLE_ADS_LAST_CLICK"},
+                },
+            },
+            "update_conversion_action": {
+                "description": (
+                    "Update fields on an existing conversion action. Only "
+                    "fields explicitly provided are changed."
+                ),
+                "handler": self.update_conversion_action,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "conversion_action_id": {"type": "string", "required": True},
+                    "name": {"type": "string"},
+                    "status": {"type": "string"},
+                    "default_value": {"type": "number"},
+                    "include_in_conversions_metric": {"type": "boolean"},
+                    "counting_type": {"type": "string"},
+                    "phone_call_duration_seconds": {"type": "integer"},
                 },
             },
         }
@@ -1445,56 +1562,135 @@ class GoogleAdsTools:
     # Keyword management
     # ------------------------------------------------------------------
 
+    _ALLOWED_KEYWORD_MATCH_TYPES = frozenset({"EXACT", "PHRASE", "BROAD"})
+
+    # Characters Google rejects in keyword text. Reject up-front so the caller
+    # gets a clear error rather than an opaque API rejection.
+    _DISALLOWED_KEYWORD_CHARS = set('!@%^()={}|<>')
+
     @staticmethod
-    def _resolve_match_type(client, match_type: Optional[str]):
-        match_enum = client.enums.KeywordMatchTypeEnum
-        match_map = {
-            "BROAD": match_enum.BROAD,
-            "PHRASE": match_enum.PHRASE,
-            "EXACT": match_enum.EXACT,
-        }
-        return match_map.get((match_type or "BROAD").upper(), match_enum.BROAD)
+    def _normalize_keyword_text(text: str) -> str:
+        """Strip surrounding whitespace and collapse interior runs to a single
+        space. Returns the cleaned text. Empty / whitespace-only input is
+        returned as ''."""
+        return " ".join(str(text or "").split())
+
+    @classmethod
+    def _validate_keyword_text(cls, text: str) -> str:
+        """Normalize and validate keyword text. Raises ValueError on bad input."""
+        cleaned = cls._normalize_keyword_text(text)
+        if not cleaned:
+            raise ValueError("keyword text cannot be empty")
+        bad = cls._DISALLOWED_KEYWORD_CHARS & set(cleaned)
+        if bad:
+            raise ValueError(
+                f"keyword text contains disallowed characters {sorted(bad)} - "
+                f"Google Ads rejects these"
+            )
+        return cleaned
+
+    @classmethod
+    def _resolve_match_type(cls, client, match_type: Optional[str], default: str = "PHRASE"):
+        """Validate match_type against the allow-list and return the proto enum.
+
+        Raises ValueError on unknown values (including the deprecated
+        BROAD_MATCH_MODIFIER). When ``match_type`` is None or empty,
+        ``default`` is used; ``default`` is itself validated.
+        """
+        raw = (match_type or default or "").strip().upper()
+        if raw == "BROAD_MATCH_MODIFIER":
+            raise ValueError(
+                "match_type 'BROAD_MATCH_MODIFIER' was deprecated by Google in 2021. "
+                "Use 'PHRASE' instead (closest equivalent behavior)."
+            )
+        if raw not in cls._ALLOWED_KEYWORD_MATCH_TYPES:
+            raise ValueError(
+                f"Invalid match_type {match_type!r}. Allowed: "
+                f"{sorted(cls._ALLOWED_KEYWORD_MATCH_TYPES)}"
+            )
+        return getattr(client.enums.KeywordMatchTypeEnum, raw)
 
     async def add_keywords(
         self,
         customer_id: str,
         ad_group_id: str,
         keywords: List[Any],
+        default_match_type: str = "PHRASE",
     ) -> Dict[str, Any]:
         """Add keywords to an ad group.
 
-        Each entry in `keywords` may be a string (treated as broad match) or
-        a dict with `text` and optional `match_type` and `cpc_bid_micros`.
+        IMPORTANT: plain strings default to PHRASE match type, NOT BROAD. Pass
+        an object {"text": "...", "match_type": "BROAD"} explicitly if BROAD
+        is intended - BROAD-by-default is the single largest source of wasted
+        spend in Google Ads accounts.
+
+        Each entry in ``keywords`` may be:
+          - a string: uses ``default_match_type``, no per-keyword bid
+          - an object {text, match_type?, cpc_bid_micros?, final_url?}
+
+        Args:
+            customer_id: Account ID (hyphens accepted).
+            ad_group_id: Ad group to attach the keywords to.
+            keywords: Mixed list of strings or keyword objects.
+            default_match_type: Match type used for plain-string entries
+                (default PHRASE; allowed: EXACT, PHRASE, BROAD).
         """
         try:
+            # Validate the default up-front so we fail fast on bad input.
             client = self.auth_manager.get_client(customer_id)
+            normalized = []
+            for entry in keywords:
+                if isinstance(entry, str):
+                    text = self._validate_keyword_text(entry)
+                    match_type = default_match_type
+                    cpc_bid_micros = None
+                    final_url = None
+                else:
+                    text = self._validate_keyword_text(entry.get("text", ""))
+                    match_type = entry.get("match_type") or default_match_type
+                    cpc_bid_micros = entry.get("cpc_bid_micros")
+                    final_url = entry.get("final_url")
+
+                if cpc_bid_micros is not None:
+                    cpc_bid_micros = int(cpc_bid_micros)
+                    if cpc_bid_micros <= 0:
+                        raise ValueError(
+                            f"cpc_bid_micros must be a positive integer, got {cpc_bid_micros}"
+                        )
+
+                normalized.append({
+                    "text": text,
+                    "match_type": match_type,
+                    "cpc_bid_micros": cpc_bid_micros,
+                    "final_url": final_url,
+                })
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        try:
             criterion_service = client.get_service("AdGroupCriterionService")
 
             operations = []
-            for entry in keywords:
-                if isinstance(entry, str):
-                    text = entry
-                    match_type = "BROAD"
-                    cpc_bid_micros = None
-                else:
-                    text = entry["text"]
-                    match_type = entry.get("match_type", "BROAD")
-                    cpc_bid_micros = entry.get("cpc_bid_micros")
-
+            for entry in normalized:
                 operation = client.get_type("AdGroupCriterionOperation")
                 criterion = operation.create
                 criterion.ad_group = (
-                    f"customers/{customer_id}/adGroups/{ad_group_id}"
+                    f"customers/{customer_id.replace('-', '').strip()}"
+                    f"/adGroups/{ad_group_id}"
                 )
                 criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
-                criterion.keyword.text = text
-                criterion.keyword.match_type = self._resolve_match_type(client, match_type)
-                if cpc_bid_micros is not None:
-                    criterion.cpc_bid_micros = int(cpc_bid_micros)
+                criterion.keyword.text = entry["text"]
+                criterion.keyword.match_type = self._resolve_match_type(
+                    client, entry["match_type"], default=default_match_type
+                )
+                if entry["cpc_bid_micros"] is not None:
+                    criterion.cpc_bid_micros = entry["cpc_bid_micros"]
+                if entry["final_url"]:
+                    criterion.final_urls.append(entry["final_url"])
                 operations.append(operation)
 
             response = criterion_service.mutate_ad_group_criteria(
-                customer_id=customer_id,
+                customer_id=customer_id.replace("-", "").strip(),
                 operations=operations,
             )
 
@@ -1502,6 +1698,7 @@ class GoogleAdsTools:
                 "success": True,
                 "added": [r.resource_name for r in response.results],
                 "count": len(response.results),
+                "default_match_type_used": default_match_type.upper(),
                 "message": f"Added {len(response.results)} keyword(s) to ad group {ad_group_id}",
             }
 
@@ -1518,8 +1715,17 @@ class GoogleAdsTools:
         keywords: List[Any],
         campaign_id: Optional[str] = None,
         ad_group_id: Optional[str] = None,
+        default_match_type: str = "PHRASE",
     ) -> Dict[str, Any]:
-        """Add negative keywords at the campaign or ad-group level."""
+        """Add negative keywords at the campaign or ad-group level.
+
+        IMPORTANT: plain strings default to PHRASE match type, NOT BROAD. Pass
+        an object {"text": "...", "match_type": "BROAD"} explicitly to widen
+        the block.
+
+        Each entry in ``keywords`` may be a string (uses default_match_type)
+        or an object {text, match_type?}.
+        """
         if not (campaign_id or ad_group_id):
             return {
                 "success": False,
@@ -1528,34 +1734,38 @@ class GoogleAdsTools:
 
         try:
             client = self.auth_manager.get_client(customer_id)
-
             normalized = []
             for entry in keywords:
                 if isinstance(entry, str):
-                    normalized.append({"text": entry, "match_type": "BROAD"})
+                    normalized.append({
+                        "text": self._validate_keyword_text(entry),
+                        "match_type": default_match_type,
+                    })
                 else:
                     normalized.append({
-                        "text": entry["text"],
-                        "match_type": entry.get("match_type", "BROAD"),
+                        "text": self._validate_keyword_text(entry.get("text", "")),
+                        "match_type": entry.get("match_type") or default_match_type,
                     })
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
 
+        cid = customer_id.replace("-", "").strip()
+        try:
             if ad_group_id:
                 criterion_service = client.get_service("AdGroupCriterionService")
                 operations = []
                 for entry in normalized:
                     operation = client.get_type("AdGroupCriterionOperation")
                     criterion = operation.create
-                    criterion.ad_group = (
-                        f"customers/{customer_id}/adGroups/{ad_group_id}"
-                    )
+                    criterion.ad_group = f"customers/{cid}/adGroups/{ad_group_id}"
                     criterion.negative = True
                     criterion.keyword.text = entry["text"]
                     criterion.keyword.match_type = self._resolve_match_type(
-                        client, entry["match_type"]
+                        client, entry["match_type"], default=default_match_type
                     )
                     operations.append(operation)
                 response = criterion_service.mutate_ad_group_criteria(
-                    customer_id=customer_id,
+                    customer_id=cid,
                     operations=operations,
                 )
             else:
@@ -1564,17 +1774,15 @@ class GoogleAdsTools:
                 for entry in normalized:
                     operation = client.get_type("CampaignCriterionOperation")
                     criterion = operation.create
-                    criterion.campaign = (
-                        f"customers/{customer_id}/campaigns/{campaign_id}"
-                    )
+                    criterion.campaign = f"customers/{cid}/campaigns/{campaign_id}"
                     criterion.negative = True
                     criterion.keyword.text = entry["text"]
                     criterion.keyword.match_type = self._resolve_match_type(
-                        client, entry["match_type"]
+                        client, entry["match_type"], default=default_match_type
                     )
                     operations.append(operation)
                 response = criterion_service.mutate_campaign_criteria(
-                    customer_id=customer_id,
+                    customer_id=cid,
                     operations=operations,
                 )
 
@@ -1583,6 +1791,7 @@ class GoogleAdsTools:
                 "added": [r.resource_name for r in response.results],
                 "count": len(response.results),
                 "level": "ad_group" if ad_group_id else "campaign",
+                "default_match_type_used": default_match_type.upper(),
             }
 
         except GoogleAdsException as e:
@@ -2325,4 +2534,646 @@ class GoogleAdsTools:
             return self.error_handler.format_error_response(e)
         except Exception as e:
             logger.error(f"Unexpected error unlinking customer asset: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Keyword update / remove
+    # ------------------------------------------------------------------
+
+    async def update_keyword(
+        self,
+        customer_id: str,
+        criterion_resource_name: str,
+        status: Optional[str] = None,
+        cpc_bid_micros: Optional[int] = None,
+        final_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update an existing keyword criterion.
+
+        Only fields the caller explicitly provides are sent; unspecified
+        fields are preserved (FieldMask is built from the modified set).
+
+        Args:
+            customer_id: Account ID.
+            criterion_resource_name: Full resource name from list_keywords or
+                add_keywords output (e.g. customers/X/adGroupCriteria/Y~Z).
+            status: ENABLED | PAUSED | REMOVED.
+            cpc_bid_micros: Per-keyword max CPC bid in micros.
+            final_url: Per-keyword landing-page URL override.
+        """
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            criterion_service = client.get_service("AdGroupCriterionService")
+
+            operation = client.get_type("AdGroupCriterionOperation")
+            criterion = operation.update
+            criterion.resource_name = criterion_resource_name
+
+            update_mask = []
+
+            if status is not None:
+                status_enum = client.enums.AdGroupCriterionStatusEnum
+                status_map = {
+                    "ENABLED": status_enum.ENABLED,
+                    "PAUSED": status_enum.PAUSED,
+                    "REMOVED": status_enum.REMOVED,
+                }
+                key = status.upper()
+                if key not in status_map:
+                    return {
+                        "success": False,
+                        "error": f"Invalid status {status!r}. Allowed: ENABLED, PAUSED, REMOVED",
+                    }
+                criterion.status = status_map[key]
+                update_mask.append("status")
+
+            if cpc_bid_micros is not None:
+                cpc_bid_micros = int(cpc_bid_micros)
+                if cpc_bid_micros <= 0:
+                    return {
+                        "success": False,
+                        "error": f"cpc_bid_micros must be a positive integer, got {cpc_bid_micros}",
+                    }
+                criterion.cpc_bid_micros = cpc_bid_micros
+                update_mask.append("cpc_bid_micros")
+
+            if final_url is not None:
+                criterion.final_urls.append(final_url)
+                update_mask.append("final_urls")
+
+            if not update_mask:
+                return {
+                    "success": False,
+                    "error": "No update fields provided. Pass at least one of status, cpc_bid_micros, final_url.",
+                }
+
+            operation.update_mask.CopyFrom(field_mask_pb2.FieldMask(paths=update_mask))
+
+            criterion_service.mutate_ad_group_criteria(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "criterion_resource_name": criterion_resource_name,
+                "updated_fields": update_mask,
+                "message": f"Updated keyword {criterion_resource_name}",
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to update keyword: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error updating keyword: {e}")
+            raise
+
+    async def remove_keywords(
+        self,
+        customer_id: str,
+        criterion_resource_names: List[str],
+    ) -> Dict[str, Any]:
+        """Remove keyword criteria by their full resource names.
+
+        Multiple removals batch into a single API call. Reports per-criterion
+        results so partial failures are visible.
+        """
+        if not criterion_resource_names:
+            return {"success": False, "error": "criterion_resource_names cannot be empty"}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            criterion_service = client.get_service("AdGroupCriterionService")
+
+            operations = []
+            for rn in criterion_resource_names:
+                op = client.get_type("AdGroupCriterionOperation")
+                op.remove = rn
+                operations.append(op)
+
+            response = criterion_service.mutate_ad_group_criteria(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=operations,
+                partial_failure=True,
+            )
+
+            removed = [r.resource_name for r in response.results if r.resource_name]
+            partial = self.error_handler.handle_partial_failure(response) if hasattr(
+                self.error_handler, "handle_partial_failure"
+            ) else None
+
+            return {
+                "success": True,
+                "removed": removed,
+                "count": len(removed),
+                "requested": len(criterion_resource_names),
+                "partial_failure": partial,
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to remove keywords: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error removing keywords: {e}")
+            raise
+
+    async def remove_negative_keywords(
+        self,
+        customer_id: str,
+        criterion_resource_names: List[str],
+    ) -> Dict[str, Any]:
+        """Remove negative-keyword criteria by their full resource names.
+
+        Detects whether each resource name is a CampaignCriterion (campaign
+        level) or AdGroupCriterion (ad-group level) by parsing the resource
+        path and routes operations to the right service. Multiple removals
+        batch into one API call per service.
+        """
+        if not criterion_resource_names:
+            return {"success": False, "error": "criterion_resource_names cannot be empty"}
+
+        cid = customer_id.replace("-", "").strip()
+        campaign_ops = []
+        ad_group_ops = []
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            for rn in criterion_resource_names:
+                if "/campaignCriteria/" in rn:
+                    op = client.get_type("CampaignCriterionOperation")
+                    op.remove = rn
+                    campaign_ops.append(op)
+                elif "/adGroupCriteria/" in rn:
+                    op = client.get_type("AdGroupCriterionOperation")
+                    op.remove = rn
+                    ad_group_ops.append(op)
+                else:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Cannot determine criterion level from {rn!r}. "
+                            "Expected substring '/campaignCriteria/' or '/adGroupCriteria/'."
+                        ),
+                    }
+
+            removed = []
+            if ad_group_ops:
+                ag_response = client.get_service("AdGroupCriterionService").mutate_ad_group_criteria(
+                    customer_id=cid,
+                    operations=ad_group_ops,
+                    partial_failure=True,
+                )
+                removed.extend(r.resource_name for r in ag_response.results if r.resource_name)
+            if campaign_ops:
+                c_response = client.get_service("CampaignCriterionService").mutate_campaign_criteria(
+                    customer_id=cid,
+                    operations=campaign_ops,
+                    partial_failure=True,
+                )
+                removed.extend(r.resource_name for r in c_response.results if r.resource_name)
+
+            return {
+                "success": True,
+                "removed": removed,
+                "count": len(removed),
+                "requested": len(criterion_resource_names),
+                "campaign_level": len(campaign_ops),
+                "ad_group_level": len(ad_group_ops),
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to remove negative keywords: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error removing negative keywords: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Conversion actions
+    # ------------------------------------------------------------------
+
+    _CONVERSION_ACTION_CATEGORIES = frozenset({
+        "DEFAULT", "PAGE_VIEW", "PURCHASE", "SIGNUP", "DOWNLOAD",
+        "ADD_TO_CART", "BEGIN_CHECKOUT", "SUBSCRIBE_PAID", "PHONE_CALL_LEAD",
+        "IMPORTED_LEAD", "SUBMIT_LEAD_FORM", "BOOK_APPOINTMENT", "REQUEST_QUOTE",
+        "GET_DIRECTIONS", "OUTBOUND_CLICK", "CONTACT", "ENGAGEMENT", "STORE_VISIT",
+        "STORE_SALE", "QUALIFIED_LEAD", "CONVERTED_LEAD",
+    })
+
+    _CONVERSION_ACTION_TYPES = frozenset({
+        "AD_CALL", "CLICK_TO_CALL", "GOOGLE_PLAY_DOWNLOAD", "GOOGLE_PLAY_IN_APP_PURCHASE",
+        "UPLOAD_CALLS", "UPLOAD_CLICKS", "WEBPAGE", "WEBSITE_CALL",
+        "STORE_SALES_DIRECT_UPLOAD", "STORE_SALES", "FIREBASE_ANDROID_FIRST_OPEN",
+        "FIREBASE_ANDROID_IN_APP_PURCHASE", "FIREBASE_ANDROID_CUSTOM",
+        "FIREBASE_IOS_FIRST_OPEN", "FIREBASE_IOS_IN_APP_PURCHASE", "FIREBASE_IOS_CUSTOM",
+        "THIRD_PARTY_APP_ANALYTICS_ANDROID_FIRST_OPEN",
+        "THIRD_PARTY_APP_ANALYTICS_ANDROID_IN_APP_PURCHASE",
+        "THIRD_PARTY_APP_ANALYTICS_ANDROID_CUSTOM",
+        "THIRD_PARTY_APP_ANALYTICS_IOS_FIRST_OPEN",
+        "THIRD_PARTY_APP_ANALYTICS_IOS_IN_APP_PURCHASE",
+        "THIRD_PARTY_APP_ANALYTICS_IOS_CUSTOM",
+        "ANDROID_APP_PRE_REGISTRATION", "ANDROID_INSTALLS_ALL_OTHER_APPS",
+        "FLOODLIGHT_ACTION", "FLOODLIGHT_TRANSACTION", "GOOGLE_HOSTED",
+        "LEAD_FORM_SUBMIT", "SALESFORCE", "SEARCH_ADS_360",
+        "SMART_CAMPAIGN_AD_CLICKS_TO_CALL", "SMART_CAMPAIGN_MAP_CLICKS_TO_CALL",
+        "SMART_CAMPAIGN_MAP_DIRECTIONS", "SMART_CAMPAIGN_TRACKED_CALLS",
+        "STORE_VISITS",
+    })
+
+    async def list_conversion_actions(
+        self,
+        customer_id: str,
+        status: Optional[str] = None,
+        type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List conversion actions on the account with a derived summary.
+
+        The summary block answers the most common audit question in one call:
+        is phone-call tracking set up? are conversions actually counted?
+        """
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            googleads_service = client.get_service("GoogleAdsService")
+
+            where = []
+            if status:
+                where.append(f"conversion_action.status = '{status.upper()}'")
+            else:
+                where.append("conversion_action.status != 'REMOVED'")
+            if type:
+                where.append(f"conversion_action.type = '{type.upper()}'")
+
+            query = f"""
+                SELECT
+                    conversion_action.id,
+                    conversion_action.name,
+                    conversion_action.status,
+                    conversion_action.type,
+                    conversion_action.category,
+                    conversion_action.value_settings.default_value,
+                    conversion_action.value_settings.always_use_default_value,
+                    conversion_action.counting_type,
+                    conversion_action.click_through_lookback_window_days,
+                    conversion_action.view_through_lookback_window_days,
+                    conversion_action.include_in_conversions_metric,
+                    conversion_action.attribution_model_settings.attribution_model,
+                    conversion_action.app_id,
+                    conversion_action.phone_call_duration_seconds,
+                    conversion_action.resource_name
+                FROM conversion_action
+                WHERE {" AND ".join(where)}
+                ORDER BY conversion_action.id
+            """
+
+            response = googleads_service.search(
+                customer_id=customer_id.replace("-", "").strip(),
+                query=query,
+            )
+
+            actions = []
+            phone_call_actions = 0
+            website_actions = 0
+            active_count = 0
+            in_metric_count = 0
+
+            for row in response:
+                ca = row.conversion_action
+                type_name = ca.type_.name
+                actions.append({
+                    "id": str(ca.id),
+                    "name": ca.name,
+                    "type": type_name,
+                    "category": ca.category.name,
+                    "status": ca.status.name,
+                    "default_value": ca.value_settings.default_value,
+                    "always_use_default_value": ca.value_settings.always_use_default_value,
+                    "counting_type": ca.counting_type.name,
+                    "click_through_lookback_days": ca.click_through_lookback_window_days,
+                    "view_through_lookback_days": ca.view_through_lookback_window_days,
+                    "include_in_conversions_metric": ca.include_in_conversions_metric,
+                    "attribution_model": ca.attribution_model_settings.attribution_model.name,
+                    "phone_call_duration_seconds": ca.phone_call_duration_seconds,
+                    "app_id": ca.app_id,
+                    "resource_name": ca.resource_name,
+                })
+
+                if "CALL" in type_name or ca.category.name == "PHONE_CALL_LEAD":
+                    phone_call_actions += 1
+                if type_name in ("WEBPAGE", "LEAD_FORM_SUBMIT"):
+                    website_actions += 1
+                if ca.status.name == "ENABLED":
+                    active_count += 1
+                if ca.include_in_conversions_metric:
+                    in_metric_count += 1
+
+            return {
+                "success": True,
+                "conversion_actions": actions,
+                "count": len(actions),
+                "summary": {
+                    "phone_call_actions": phone_call_actions,
+                    "website_actions": website_actions,
+                    "active_count": active_count,
+                    "in_conversions_metric_count": in_metric_count,
+                },
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to list conversion actions: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error listing conversion actions: {e}")
+            raise
+
+    async def get_conversion_action(
+        self,
+        customer_id: str,
+        conversion_action_id: str,
+    ) -> Dict[str, Any]:
+        """Return full details for one conversion action including tag_snippets.
+
+        ``tag_snippets`` carries the JavaScript snippet to install on the
+        site - useful for client onboarding without a UI round-trip.
+        """
+        cid = customer_id.replace("-", "").strip()
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            googleads_service = client.get_service("GoogleAdsService")
+
+            query = f"""
+                SELECT
+                    conversion_action.id,
+                    conversion_action.name,
+                    conversion_action.status,
+                    conversion_action.type,
+                    conversion_action.category,
+                    conversion_action.value_settings.default_value,
+                    conversion_action.value_settings.always_use_default_value,
+                    conversion_action.counting_type,
+                    conversion_action.click_through_lookback_window_days,
+                    conversion_action.view_through_lookback_window_days,
+                    conversion_action.include_in_conversions_metric,
+                    conversion_action.attribution_model_settings.attribution_model,
+                    conversion_action.phone_call_duration_seconds,
+                    conversion_action.app_id,
+                    conversion_action.tag_snippets,
+                    conversion_action.resource_name
+                FROM conversion_action
+                WHERE conversion_action.id = {int(conversion_action_id)}
+            """
+
+            response = googleads_service.search(customer_id=cid, query=query)
+
+            for row in response:
+                ca = row.conversion_action
+                tag_snippets = []
+                for ts in ca.tag_snippets:
+                    tag_snippets.append({
+                        "type": ts.type_.name,
+                        "page_format": ts.page_format.name,
+                        "global_site_tag": ts.global_site_tag,
+                        "event_snippet": ts.event_snippet,
+                    })
+                return {
+                    "success": True,
+                    "conversion_action": {
+                        "id": str(ca.id),
+                        "name": ca.name,
+                        "type": ca.type_.name,
+                        "category": ca.category.name,
+                        "status": ca.status.name,
+                        "default_value": ca.value_settings.default_value,
+                        "always_use_default_value": ca.value_settings.always_use_default_value,
+                        "counting_type": ca.counting_type.name,
+                        "click_through_lookback_days": ca.click_through_lookback_window_days,
+                        "view_through_lookback_days": ca.view_through_lookback_window_days,
+                        "include_in_conversions_metric": ca.include_in_conversions_metric,
+                        "attribution_model": ca.attribution_model_settings.attribution_model.name,
+                        "phone_call_duration_seconds": ca.phone_call_duration_seconds,
+                        "app_id": ca.app_id,
+                        "resource_name": ca.resource_name,
+                        "tag_snippets": tag_snippets,
+                    },
+                }
+
+            return {
+                "success": False,
+                "error": f"Conversion action {conversion_action_id} not found",
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to get conversion action: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error getting conversion action: {e}")
+            raise
+
+    async def create_conversion_action(
+        self,
+        customer_id: str,
+        name: str,
+        category: str,
+        type: str = "WEBPAGE",
+        default_value: Optional[float] = None,
+        always_use_default_value: bool = True,
+        counting_type: str = "ONE_PER_CLICK",
+        click_through_lookback_days: int = 30,
+        phone_call_duration_seconds: int = 60,
+        include_in_conversions_metric: bool = True,
+        attribution_model: str = "GOOGLE_ADS_LAST_CLICK",
+    ) -> Dict[str, Any]:
+        """Create a new conversion action.
+
+        Most common use case: spinning up a 'Calls from ads' action on
+        accounts that lack one (category=PHONE_CALL_LEAD, type=AD_CALL or
+        WEBSITE_CALL). For form submissions: category=SUBMIT_LEAD_FORM,
+        type=WEBPAGE, counting_type=ONE_PER_CLICK.
+        """
+        category_norm = (category or "").upper()
+        type_norm = (type or "WEBPAGE").upper()
+
+        if category_norm not in self._CONVERSION_ACTION_CATEGORIES:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid category {category!r}. Allowed: "
+                    f"{sorted(self._CONVERSION_ACTION_CATEGORIES)}"
+                ),
+            }
+        if type_norm not in self._CONVERSION_ACTION_TYPES:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid type {type!r}. Allowed: "
+                    f"{sorted(self._CONVERSION_ACTION_TYPES)}"
+                ),
+            }
+
+        # phone_call_duration_seconds is only meaningful for phone-call types
+        is_phone_type = "CALL" in type_norm or category_norm == "PHONE_CALL_LEAD"
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            ca_service = client.get_service("ConversionActionService")
+
+            operation = client.get_type("ConversionActionOperation")
+            ca = operation.create
+            ca.name = name
+            ca.type_ = getattr(client.enums.ConversionActionTypeEnum, type_norm)
+            ca.category = getattr(client.enums.ConversionActionCategoryEnum, category_norm)
+            ca.status = client.enums.ConversionActionStatusEnum.ENABLED
+            ca.include_in_conversions_metric = include_in_conversions_metric
+            ca.click_through_lookback_window_days = int(click_through_lookback_days)
+
+            counting_enum = client.enums.ConversionActionCountingTypeEnum
+            counting_map = {
+                "ONE_PER_CLICK": counting_enum.ONE_PER_CLICK,
+                "MANY_PER_CLICK": counting_enum.MANY_PER_CLICK,
+            }
+            ca.counting_type = counting_map.get(
+                counting_type.upper(), counting_enum.ONE_PER_CLICK
+            )
+
+            attribution_enum = client.enums.AttributionModelEnum
+            try:
+                ca.attribution_model_settings.attribution_model = getattr(
+                    attribution_enum, attribution_model.upper()
+                )
+            except AttributeError:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Invalid attribution_model {attribution_model!r}. "
+                        "Use one of the AttributionModelEnum values "
+                        "(e.g. GOOGLE_ADS_LAST_CLICK, LINEAR, TIME_DECAY, ...)."
+                    ),
+                }
+
+            if default_value is not None:
+                ca.value_settings.default_value = float(default_value)
+                ca.value_settings.always_use_default_value = bool(always_use_default_value)
+
+            if is_phone_type:
+                ca.phone_call_duration_seconds = int(phone_call_duration_seconds)
+
+            response = ca_service.mutate_conversion_actions(
+                customer_id=customer_id.replace("-", "").strip(),
+                operations=[operation],
+            )
+
+            resource_name = response.results[0].resource_name
+            return {
+                "success": True,
+                "conversion_action_resource_name": resource_name,
+                "conversion_action_id": resource_name.split("/")[-1],
+                "name": name,
+                "type": type_norm,
+                "category": category_norm,
+                "message": f"Conversion action '{name}' created",
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to create conversion action: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error creating conversion action: {e}")
+            raise
+
+    async def update_conversion_action(
+        self,
+        customer_id: str,
+        conversion_action_id: str,
+        name: Optional[str] = None,
+        status: Optional[str] = None,
+        default_value: Optional[float] = None,
+        include_in_conversions_metric: Optional[bool] = None,
+        counting_type: Optional[str] = None,
+        phone_call_duration_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update fields on an existing conversion action.
+
+        Only fields the caller provides are sent - others are preserved.
+        """
+        cid = customer_id.replace("-", "").strip()
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            ca_service = client.get_service("ConversionActionService")
+
+            operation = client.get_type("ConversionActionOperation")
+            ca = operation.update
+            ca.resource_name = f"customers/{cid}/conversionActions/{conversion_action_id}"
+
+            update_mask = []
+
+            if name is not None:
+                ca.name = name
+                update_mask.append("name")
+
+            if status is not None:
+                status_enum = client.enums.ConversionActionStatusEnum
+                status_map = {
+                    "ENABLED": status_enum.ENABLED,
+                    "REMOVED": status_enum.REMOVED,
+                    "HIDDEN": status_enum.HIDDEN,
+                }
+                key = status.upper()
+                if key not in status_map:
+                    return {
+                        "success": False,
+                        "error": f"Invalid status {status!r}. Allowed: ENABLED, REMOVED, HIDDEN",
+                    }
+                ca.status = status_map[key]
+                update_mask.append("status")
+
+            if default_value is not None:
+                ca.value_settings.default_value = float(default_value)
+                update_mask.append("value_settings.default_value")
+
+            if include_in_conversions_metric is not None:
+                ca.include_in_conversions_metric = bool(include_in_conversions_metric)
+                update_mask.append("include_in_conversions_metric")
+
+            if counting_type is not None:
+                counting_enum = client.enums.ConversionActionCountingTypeEnum
+                counting_map = {
+                    "ONE_PER_CLICK": counting_enum.ONE_PER_CLICK,
+                    "MANY_PER_CLICK": counting_enum.MANY_PER_CLICK,
+                }
+                key = counting_type.upper()
+                if key not in counting_map:
+                    return {
+                        "success": False,
+                        "error": f"Invalid counting_type {counting_type!r}. Allowed: ONE_PER_CLICK, MANY_PER_CLICK",
+                    }
+                ca.counting_type = counting_map[key]
+                update_mask.append("counting_type")
+
+            if phone_call_duration_seconds is not None:
+                ca.phone_call_duration_seconds = int(phone_call_duration_seconds)
+                update_mask.append("phone_call_duration_seconds")
+
+            if not update_mask:
+                return {
+                    "success": False,
+                    "error": "No update fields provided. Pass at least one of name, status, default_value, include_in_conversions_metric, counting_type, phone_call_duration_seconds.",
+                }
+
+            operation.update_mask.CopyFrom(field_mask_pb2.FieldMask(paths=update_mask))
+
+            ca_service.mutate_conversion_actions(
+                customer_id=cid,
+                operations=[operation],
+            )
+
+            return {
+                "success": True,
+                "conversion_action_id": conversion_action_id,
+                "updated_fields": update_mask,
+                "message": f"Conversion action {conversion_action_id} updated",
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to update conversion action: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error updating conversion action: {e}")
             raise
