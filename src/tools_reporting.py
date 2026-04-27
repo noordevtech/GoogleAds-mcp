@@ -7,9 +7,34 @@ import structlog
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-from .utils import micros_to_currency, format_date_range
+from .utils import micros_to_currency, format_date_range, derived_metrics
 
 logger = structlog.get_logger(__name__)
+
+
+# Friendly metric names that callers may pass in -> real GAQL field names.
+# Add new aliases here when callers ask for them by their common name.
+_GAQL_METRIC_ALIASES = {
+    "conversion_rate": "conversions_from_interactions_rate",
+    "conversion_value": "conversions_value",
+    "cpc": "average_cpc",
+    "cpm": "average_cpm",
+}
+
+
+# Date ranges accepted by Google Ads GAQL. Validate user input against this
+# allow-list before splicing into a query.
+_GAQL_DATE_RANGES = frozenset({
+    "TODAY", "YESTERDAY",
+    "LAST_7_DAYS", "LAST_14_DAYS", "LAST_30_DAYS", "LAST_90_DAYS",
+    "THIS_MONTH", "LAST_MONTH",
+    "THIS_WEEK_MON_TODAY", "THIS_WEEK_SUN_TODAY",
+    "LAST_WEEK_MON_SUN", "LAST_WEEK_SUN_SAT",
+    "LAST_BUSINESS_WEEK",
+    "THIS_QUARTER", "LAST_QUARTER",
+    "THIS_YEAR", "LAST_YEAR",
+    "ALL_TIME",
+})
 
 
 class ReportingTools:
@@ -31,16 +56,19 @@ class ReportingTools:
             client = self.auth_manager.get_client(customer_id)
             googleads_service = client.get_service("GoogleAdsService")
             
-            # Default metrics if not specified
+            # Default metrics if not specified. Note: friendly aliases like
+            # 'conversion_rate' are translated to the real GAQL field name in
+            # _GAQL_METRIC_ALIASES below.
             if not metrics:
                 metrics = [
                     "clicks", "impressions", "cost_micros", "conversions",
-                    "ctr", "average_cpc", "conversion_rate", "cost_per_conversion"
+                    "conversions_value", "cost_per_conversion",
+                    "ctr", "average_cpc", "conversion_rate",
                 ]
-                
-            # Build metrics selection
-            metrics_fields = ", ".join([f"metrics.{m}" for m in metrics])
-            
+
+            gaql_metrics = [_GAQL_METRIC_ALIASES.get(m, m) for m in metrics]
+            metrics_fields = ", ".join([f"metrics.{m}" for m in gaql_metrics])
+
             query = f"""
                 SELECT
                     campaign.id,
@@ -50,64 +78,70 @@ class ReportingTools:
                 FROM campaign
                 WHERE segments.date DURING {date_range}
             """
-            
+
             if campaign_id:
                 query += f" AND campaign.id = {campaign_id}"
-                
+
             query += " ORDER BY metrics.cost_micros DESC"
-            
+
             response = googleads_service.search(
                 customer_id=customer_id,
                 query=query,
             )
-            
+
             campaigns = []
-            total_metrics = {m: 0 for m in metrics}
-            
+            totals = {
+                "clicks": 0,
+                "impressions": 0,
+                "cost": 0.0,
+                "conversions": 0.0,
+                "conversions_value": 0.0,
+            }
+
             for row in response:
-                campaign_data = {
+                clicks = row.metrics.clicks
+                impressions = row.metrics.impressions
+                cost = micros_to_currency(row.metrics.cost_micros)
+                conversions = row.metrics.conversions
+                conv_value = row.metrics.conversions_value
+
+                campaigns.append({
                     "id": str(row.campaign.id),
                     "name": row.campaign.name,
                     "status": row.campaign.status.name,
-                    "metrics": {}
-                }
-                
-                # Process each metric
-                for metric in metrics:
-                    value = getattr(row.metrics, metric)
-                    
-                    # Format currency metrics
-                    if metric.endswith("_micros"):
-                        campaign_data["metrics"][metric.replace("_micros", "")] = micros_to_currency(value)
-                        total_metrics[metric] += value
-                    elif metric in ["ctr", "conversion_rate"]:
-                        campaign_data["metrics"][metric] = f"{value:.2%}"
-                        total_metrics[metric] += value
-                    else:
-                        campaign_data["metrics"][metric] = value
-                        total_metrics[metric] += value
-                        
-                campaigns.append(campaign_data)
-                
-            # Format totals
-            formatted_totals = {}
-            for metric, value in total_metrics.items():
-                if metric.endswith("_micros"):
-                    formatted_totals[metric.replace("_micros", "")] = micros_to_currency(value)
-                elif metric in ["ctr", "conversion_rate"]:
-                    # Calculate weighted average for rates
-                    if len(campaigns) > 0:
-                        formatted_totals[metric] = f"{value/len(campaigns):.2%}"
-                    else:
-                        formatted_totals[metric] = "0.00%"
-                else:
-                    formatted_totals[metric] = value
-                    
+                    "metrics": {
+                        "clicks": clicks,
+                        "impressions": impressions,
+                        "cost": cost,
+                        "conversions": conversions,
+                        "conversions_value": conv_value,
+                        "average_cpc": micros_to_currency(row.metrics.average_cpc),
+                        **derived_metrics(impressions, clicks, cost, conversions, conv_value),
+                    },
+                })
+
+                totals["clicks"] += clicks
+                totals["impressions"] += impressions
+                totals["cost"] += cost
+                totals["conversions"] += conversions
+                totals["conversions_value"] += conv_value
+
+            total_metrics = {
+                **totals,
+                **derived_metrics(
+                    totals["impressions"],
+                    totals["clicks"],
+                    totals["cost"],
+                    totals["conversions"],
+                    totals["conversions_value"],
+                ),
+            }
+
             return {
                 "success": True,
                 "date_range": date_range,
                 "campaigns": campaigns,
-                "total_metrics": formatted_totals,
+                "total_metrics": total_metrics,
                 "count": len(campaigns),
             }
             
@@ -140,9 +174,10 @@ class ReportingTools:
                     metrics.impressions,
                     metrics.cost_micros,
                     metrics.conversions,
+                    metrics.conversions_value,
                     metrics.ctr,
                     metrics.average_cpc,
-                    metrics.conversion_rate,
+                    metrics.conversions_from_interactions_rate,
                     metrics.cost_per_conversion
                 FROM ad_group
                 WHERE segments.date DURING {date_range}
@@ -160,6 +195,11 @@ class ReportingTools:
             
             ad_groups = []
             for row in response:
+                clicks = row.metrics.clicks
+                impressions = row.metrics.impressions
+                cost = micros_to_currency(row.metrics.cost_micros)
+                conversions = row.metrics.conversions
+                conv_value = row.metrics.conversions_value
                 ad_groups.append({
                     "id": str(row.ad_group.id),
                     "name": row.ad_group.name,
@@ -169,14 +209,13 @@ class ReportingTools:
                         "name": row.campaign.name,
                     },
                     "metrics": {
-                        "clicks": row.metrics.clicks,
-                        "impressions": row.metrics.impressions,
-                        "cost": micros_to_currency(row.metrics.cost_micros),
-                        "conversions": row.metrics.conversions,
-                        "ctr": f"{row.metrics.ctr:.2%}",
+                        "clicks": clicks,
+                        "impressions": impressions,
+                        "cost": cost,
+                        "conversions": conversions,
+                        "conversions_value": conv_value,
                         "average_cpc": micros_to_currency(row.metrics.average_cpc),
-                        "conversion_rate": f"{row.metrics.conversion_rate:.2%}",
-                        "cost_per_conversion": micros_to_currency(row.metrics.cost_per_conversion),
+                        **derived_metrics(impressions, clicks, cost, conversions, conv_value),
                     },
                 })
                 
@@ -218,10 +257,10 @@ class ReportingTools:
                     metrics.impressions,
                     metrics.cost_micros,
                     metrics.conversions,
+                    metrics.conversions_value,
                     metrics.ctr,
                     metrics.average_cpc,
-                    metrics.conversion_rate,
-                    metrics.average_position
+                    metrics.conversions_from_interactions_rate
                 FROM keyword_view
                 WHERE segments.date DURING {date_range}
                     AND ad_group_criterion.type = 'KEYWORD'
@@ -239,6 +278,11 @@ class ReportingTools:
             
             keywords = []
             for row in response:
+                clicks = row.metrics.clicks
+                impressions = row.metrics.impressions
+                cost = micros_to_currency(row.metrics.cost_micros)
+                conversions = row.metrics.conversions
+                conv_value = row.metrics.conversions_value
                 keywords.append({
                     "text": row.ad_group_criterion.keyword.text,
                     "match_type": row.ad_group_criterion.keyword.match_type.name,
@@ -252,14 +296,13 @@ class ReportingTools:
                         "name": row.campaign.name,
                     },
                     "metrics": {
-                        "clicks": row.metrics.clicks,
-                        "impressions": row.metrics.impressions,
-                        "cost": micros_to_currency(row.metrics.cost_micros),
-                        "conversions": row.metrics.conversions,
-                        "ctr": f"{row.metrics.ctr:.2%}",
+                        "clicks": clicks,
+                        "impressions": impressions,
+                        "cost": cost,
+                        "conversions": conversions,
+                        "conversions_value": conv_value,
                         "average_cpc": micros_to_currency(row.metrics.average_cpc),
-                        "conversion_rate": f"{row.metrics.conversion_rate:.2%}",
-                        "average_position": f"{row.metrics.average_position:.1f}" if row.metrics.average_position else "N/A",
+                        **derived_metrics(impressions, clicks, cost, conversions, conv_value),
                     },
                 })
                 
@@ -447,4 +490,160 @@ class ReportingTools:
             return self.error_handler.format_error_response(e)
         except Exception as e:
             logger.error(f"Unexpected error getting search terms report: {e}")
+            raise
+
+    async def list_search_terms(
+        self,
+        customer_id: str,
+        campaign_id: Optional[str] = None,
+        ad_group_id: Optional[str] = None,
+        date_range: str = "LAST_30_DAYS",
+        min_impressions: int = 1,
+        limit: int = 200,
+        only_zero_conversions: bool = False,
+    ) -> Dict[str, Any]:
+        """List actual user search queries that triggered ads, with the
+        keyword that matched and full performance metrics.
+
+        This is the primary tool for finding wasted ad spend during an
+        account audit. Run it early to identify queries that cost money but
+        don't convert, then add them as negative keywords. Each row also
+        includes the search-term status (ADDED / EXCLUDED / ADDED_EXCLUDED /
+        NONE) so you can tell at a glance which queries are still actionable.
+
+        Args:
+            customer_id: Account ID to query (required, hyphens accepted).
+            campaign_id: Optional campaign filter.
+            ad_group_id: Optional ad group filter.
+            date_range: Google Ads date range enum (default LAST_30_DAYS).
+            min_impressions: Drop terms below this impression count (default 1).
+            limit: Cap on rows returned. Hard-capped at 1000.
+            only_zero_conversions: If True, only return terms with 0 conversions
+                (the "find waste" filter).
+        """
+        # Validate inputs against allow-lists / numeric ranges before
+        # splicing them into the GAQL query string.
+        if date_range not in _GAQL_DATE_RANGES:
+            return {
+                "success": False,
+                "error": (
+                    f"Unsupported date_range '{date_range}'. "
+                    f"Must be one of: {sorted(_GAQL_DATE_RANGES)}"
+                ),
+            }
+
+        try:
+            min_impressions = max(0, int(min_impressions))
+            limit = min(1000, max(1, int(limit)))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "min_impressions and limit must be integers"}
+
+        def _digits_only(value: Optional[str], field: str) -> Optional[str]:
+            if value is None:
+                return None
+            cleaned = str(value).replace("-", "").strip()
+            if not cleaned.isdigit():
+                raise ValueError(f"{field} must be numeric, got {value!r}")
+            return cleaned
+
+        try:
+            campaign_id_clean = _digits_only(campaign_id, "campaign_id")
+            ad_group_id_clean = _digits_only(ad_group_id, "ad_group_id")
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        try:
+            client = self.auth_manager.get_client(customer_id)
+            googleads_service = client.get_service("GoogleAdsService")
+
+            where_clauses = [
+                f"segments.date DURING {date_range}",
+                f"metrics.impressions >= {min_impressions}",
+            ]
+            if campaign_id_clean:
+                where_clauses.append(f"campaign.id = {campaign_id_clean}")
+            if ad_group_id_clean:
+                where_clauses.append(f"ad_group.id = {ad_group_id_clean}")
+            if only_zero_conversions:
+                where_clauses.append("metrics.conversions = 0")
+
+            query = f"""
+                SELECT
+                    search_term_view.search_term,
+                    search_term_view.status,
+                    segments.keyword.info.text,
+                    segments.keyword.info.match_type,
+                    ad_group.id,
+                    ad_group.name,
+                    campaign.id,
+                    campaign.name,
+                    metrics.impressions,
+                    metrics.clicks,
+                    metrics.cost_micros,
+                    metrics.conversions,
+                    metrics.conversions_value,
+                    metrics.average_cpc,
+                    metrics.ctr
+                FROM search_term_view
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY metrics.cost_micros DESC
+                LIMIT {limit}
+            """
+
+            response = googleads_service.search(
+                customer_id=customer_id.replace("-", "").strip(),
+                query=query,
+            )
+
+            search_terms = []
+            for row in response:
+                clicks = row.metrics.clicks
+                impressions = row.metrics.impressions
+                cost = micros_to_currency(row.metrics.cost_micros)
+                conversions = row.metrics.conversions
+                conv_value = row.metrics.conversions_value
+
+                search_terms.append({
+                    "search_term": row.search_term_view.search_term,
+                    "status": row.search_term_view.status.name,
+                    "matched_keyword": row.segments.keyword.info.text or None,
+                    "matched_keyword_match_type": row.segments.keyword.info.match_type.name,
+                    "ad_group": {
+                        "id": str(row.ad_group.id),
+                        "name": row.ad_group.name,
+                    },
+                    "campaign": {
+                        "id": str(row.campaign.id),
+                        "name": row.campaign.name,
+                    },
+                    "metrics": {
+                        "impressions": impressions,
+                        "clicks": clicks,
+                        "cost": cost,
+                        "conversions": conversions,
+                        "conversions_value": conv_value,
+                        "average_cpc": micros_to_currency(row.metrics.average_cpc),
+                        **derived_metrics(impressions, clicks, cost, conversions, conv_value),
+                    },
+                })
+
+            return {
+                "success": True,
+                "search_terms": search_terms,
+                "count": len(search_terms),
+                "filters_applied": {
+                    "date_range": date_range,
+                    "campaign_id": campaign_id_clean,
+                    "ad_group_id": ad_group_id_clean,
+                    "min_impressions": min_impressions,
+                    "limit": limit,
+                    "only_zero_conversions": only_zero_conversions,
+                },
+            }
+
+        except GoogleAdsException as e:
+            logger.error(f"Failed to list search terms: {e}")
+            return self.error_handler.format_error_response(e)
+        except Exception as e:
+            logger.error(f"Unexpected error listing search terms: {e}")
             raise

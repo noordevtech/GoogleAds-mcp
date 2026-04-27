@@ -7,7 +7,7 @@ import structlog
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
-from .utils import currency_to_micros, micros_to_currency, parse_date
+from .utils import currency_to_micros, micros_to_currency, parse_date, derived_metrics
 
 logger = structlog.get_logger(__name__)
 
@@ -316,11 +316,10 @@ class CampaignTools:
                     campaign.id,
                     campaign.name,
                     campaign.status,
+                    campaign.serving_status,
                     campaign.advertising_channel_type,
                     campaign.campaign_budget,
                     campaign_budget.amount_micros,
-                    campaign.start_date,
-                    campaign.end_date,
                     metrics.clicks,
                     metrics.impressions,
                     metrics.cost_micros,
@@ -351,10 +350,9 @@ class CampaignTools:
                     "id": str(row.campaign.id),
                     "name": row.campaign.name,
                     "status": row.campaign.status.name,
+                    "serving_status": row.campaign.serving_status.name,
                     "type": row.campaign.advertising_channel_type.name,
                     "budget_amount": micros_to_currency(row.campaign_budget.amount_micros),
-                    "start_date": row.campaign.start_date,
-                    "end_date": row.campaign.end_date,
                     "metrics": {
                         "clicks": row.metrics.clicks,
                         "impressions": row.metrics.impressions,
@@ -387,14 +385,13 @@ class CampaignTools:
                     campaign.id,
                     campaign.name,
                     campaign.status,
+                    campaign.serving_status,
                     campaign.advertising_channel_type,
                     campaign.advertising_channel_sub_type,
                     campaign.campaign_budget,
                     campaign_budget.amount_micros,
                     campaign_budget.delivery_method,
                     campaign.bidding_strategy_type,
-                    campaign.start_date,
-                    campaign.end_date,
                     campaign.network_settings.target_google_search,
                     campaign.network_settings.target_search_network,
                     campaign.network_settings.target_partner_search_network,
@@ -403,9 +400,11 @@ class CampaignTools:
                     metrics.impressions,
                     metrics.cost_micros,
                     metrics.conversions,
+                    metrics.conversions_value,
+                    metrics.cost_per_conversion,
                     metrics.average_cpc,
                     metrics.ctr,
-                    metrics.conversion_rate
+                    metrics.conversions_from_interactions_rate
                 FROM campaign
                 WHERE campaign.id = {campaign_id}
                     AND segments.date DURING LAST_30_DAYS
@@ -417,12 +416,19 @@ class CampaignTools:
             )
             
             for row in response:
+                clicks = row.metrics.clicks
+                impressions = row.metrics.impressions
+                cost = micros_to_currency(row.metrics.cost_micros)
+                conversions = row.metrics.conversions
+                conv_value = row.metrics.conversions_value
+                derived = derived_metrics(impressions, clicks, cost, conversions, conv_value)
                 return {
                     "success": True,
                     "campaign": {
                         "id": str(row.campaign.id),
                         "name": row.campaign.name,
                         "status": row.campaign.status.name,
+                        "serving_status": row.campaign.serving_status.name,
                         "type": row.campaign.advertising_channel_type.name,
                         "subtype": getattr(row.campaign.advertising_channel_sub_type, "name", None),
                         "budget": {
@@ -430,10 +436,6 @@ class CampaignTools:
                             "delivery_method": row.campaign_budget.delivery_method.name,
                         },
                         "bidding_strategy": row.campaign.bidding_strategy_type.name,
-                        "dates": {
-                            "start": row.campaign.start_date,
-                            "end": row.campaign.end_date,
-                        },
                         "network_settings": {
                             "google_search": row.campaign.network_settings.target_google_search,
                             "search_network": row.campaign.network_settings.target_search_network,
@@ -441,13 +443,13 @@ class CampaignTools:
                         },
                         "optimization_score": row.campaign.optimization_score,
                         "metrics": {
-                            "clicks": row.metrics.clicks,
-                            "impressions": row.metrics.impressions,
-                            "cost": micros_to_currency(row.metrics.cost_micros),
-                            "conversions": row.metrics.conversions,
+                            "clicks": clicks,
+                            "impressions": impressions,
+                            "cost": cost,
+                            "conversions": conversions,
+                            "conversions_value": conv_value,
                             "average_cpc": micros_to_currency(row.metrics.average_cpc),
-                            "ctr": f"{row.metrics.ctr:.2%}",
-                            "conversion_rate": f"{row.metrics.conversion_rate:.2%}",
+                            **derived,
                         },
                     },
                 }
