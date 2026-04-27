@@ -408,13 +408,18 @@ class GoogleAdsTools:
         """Get all tools in MCP format."""
         tools = []
         for name, config in self._tools_registry.items():
+            params = config["parameters"]
+            properties = {
+                key: {k: v for k, v in spec.items() if k != "required"}
+                for key, spec in params.items()
+            }
             tool = Tool(
                 name=name,
                 description=config["description"],
                 inputSchema={
                     "type": "object",
-                    "properties": config["parameters"],
-                    "required": [k for k, v in config["parameters"].items() if v.get("required", False)],
+                    "properties": properties,
+                    "required": [k for k, v in params.items() if v.get("required", False)],
                 },
             )
             tools.append(tool)
