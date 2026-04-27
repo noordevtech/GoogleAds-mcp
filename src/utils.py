@@ -1,6 +1,7 @@
 """Utility functions for Google Ads MCP server."""
 
-from typing import Union, Optional, Tuple
+import json
+from typing import Any, Union, Optional, Tuple
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 import re
@@ -314,3 +315,92 @@ def batch_list(items: list, batch_size: int = 1000) -> list:
     for i in range(0, len(items), batch_size):
         batches.append(items[i:i + batch_size])
     return batches
+
+
+# ---------------------------------------------------------------------------
+# Proto-safe JSON serialization
+# ---------------------------------------------------------------------------
+#
+# Google Ads API responses contain proto-plus and google.protobuf objects
+# (Message, Value, Struct, ListValue, Timestamp, Enum wrappers, etc.) that
+# json.dumps cannot serialize. The handlers in this server do manual field
+# extraction, but stray proto values still leak through occasionally — most
+# commonly metric fields whose proto-plus repr isn't a plain Python scalar.
+#
+# proto_to_dict() turns any proto/proto-plus object into a JSON-safe dict.
+# ProtoJSONEncoder is a defensive json.JSONEncoder subclass that catches
+# anything missed by manual conversion. Pass it to json.dumps via cls=
+# at every serialization boundary.
+
+
+def proto_to_dict(message: Any) -> Any:
+    """Convert a proto-plus or protobuf Message to a JSON-safe dict.
+
+    Handles None, native Python types, proto-plus wrappers (which expose the
+    underlying protobuf via ._pb), and bare protobuf Messages. Returns the
+    input unchanged when it is already JSON-safe.
+    """
+    if message is None:
+        return None
+
+    try:
+        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.message import Message
+    except ImportError:
+        return message
+
+    pb = getattr(message, "_pb", message)
+    if isinstance(pb, Message):
+        return MessageToDict(
+            pb,
+            preserving_proto_field_name=True,
+            use_integers_for_enums=False,
+        )
+    return message
+
+
+class ProtoJSONEncoder(json.JSONEncoder):
+    """JSON encoder that knows how to serialize protobuf / proto-plus objects.
+
+    Any object that is a google.protobuf.Message, exposes a ._pb attribute
+    pointing to one (proto-plus), or is a date/datetime/Decimal is converted
+    to a JSON-safe representation. Everything else falls through to the
+    standard encoder which raises TypeError.
+    """
+
+    def default(self, obj: Any) -> Any:
+        try:
+            from google.protobuf.json_format import MessageToDict
+            from google.protobuf.message import Message
+        except ImportError:
+            Message = None  # type: ignore[assignment]
+            MessageToDict = None  # type: ignore[assignment]
+
+        if Message is not None and isinstance(obj, Message):
+            return MessageToDict(
+                obj,
+                preserving_proto_field_name=True,
+                use_integers_for_enums=False,
+            )
+
+        pb = getattr(obj, "_pb", None)
+        if Message is not None and isinstance(pb, Message):
+            return MessageToDict(
+                pb,
+                preserving_proto_field_name=True,
+                use_integers_for_enums=False,
+            )
+
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+
+        if isinstance(obj, Decimal):
+            return float(obj)
+
+        if isinstance(obj, bytes):
+            return obj.decode("utf-8", errors="replace")
+
+        if hasattr(obj, "name") and hasattr(obj, "value") and hasattr(type(obj), "__members__"):
+            return obj.name
+
+        return super().default(obj)

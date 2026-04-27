@@ -17,7 +17,7 @@ import structlog
 from .auth import GoogleAdsAuthManager, AuthenticationError
 from .error_handler import ErrorHandler, RetryableGoogleAdsClient
 from .tools_complete import GoogleAdsTools
-from .utils import format_currency, format_date_range, parse_date
+from .utils import format_currency, format_date_range, parse_date, ProtoJSONEncoder
 
 logger = structlog.get_logger(__name__)
 
@@ -55,10 +55,10 @@ class GoogleAdsMCPServer:
                 
                 # Format result as TextContent
                 if isinstance(result, dict):
-                    content = json.dumps(result, indent=2)
+                    content = json.dumps(result, indent=2, cls=ProtoJSONEncoder)
                 else:
                     content = str(result)
-                    
+
                 return [TextContent(type="text", text=content)]
                 
             except Exception as e:
@@ -73,7 +73,7 @@ class GoogleAdsMCPServer:
                 if hasattr(e, "__class__") and e.__class__.__name__ == "GoogleAdsException":
                     error_response.update(self.error_handler.format_error_response(e))
                     
-                return [TextContent(type="text", text=json.dumps(error_response, indent=2))]
+                return [TextContent(type="text", text=json.dumps(error_response, indent=2, cls=ProtoJSONEncoder))]
                 
         @self.server.list_resources()
         async def handle_list_resources() -> List[str]:
@@ -356,15 +356,15 @@ ORDER BY metrics.clicks DESC
         """Get detailed customer information."""
         try:
             result = await self.tools.execute_tool("get_account_info", {"customer_id": customer_id})
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, cls=ProtoJSONEncoder)
         except Exception as e:
             return f"Error getting customer info: {str(e)}"
-            
+
     async def _get_all_accounts(self) -> str:
         """Get all accessible accounts."""
         try:
             result = await self.tools.execute_tool("list_accounts", {})
-            return json.dumps(result, indent=2)
+            return json.dumps(result, indent=2, cls=ProtoJSONEncoder)
         except Exception as e:
             return f"Error listing accounts: {str(e)}"
             
