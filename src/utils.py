@@ -317,6 +317,29 @@ def batch_list(items: list, batch_size: int = 1000) -> list:
     return batches
 
 
+def derived_metrics(
+    impressions: Union[int, float],
+    clicks: Union[int, float],
+    cost: Union[int, float],
+    conversions: Union[int, float],
+    conversions_value: Union[int, float],
+) -> dict:
+    """Return derived performance ratios from the base Google Ads metrics.
+
+    All inputs are in their canonical unit (cost in currency units, not
+    micros). Returns ``None`` for ratios that would divide by zero so
+    consumers can distinguish "no data" from a real zero.
+    """
+    return {
+        "ctr": round(clicks / impressions, 4) if impressions else 0,
+        "average_cpc": round(cost / clicks, 2) if clicks else 0,
+        "conversion_rate": round(conversions / clicks, 4) if clicks else 0,
+        "cost_per_conversion": round(cost / conversions, 2) if conversions else None,
+        "roas": round(conversions_value / cost, 2) if cost else None,
+        "value_per_conversion": round(conversions_value / conversions, 2) if conversions else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Proto-safe JSON serialization
 # ---------------------------------------------------------------------------

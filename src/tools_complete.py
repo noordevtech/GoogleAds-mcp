@@ -374,6 +374,26 @@ class GoogleAdsTools:
                     "date_range": {"type": "string", "default": "LAST_7_DAYS"},
                 },
             },
+            "list_search_terms": {
+                "description": (
+                    "List actual user search queries that triggered ads, with "
+                    "the matched keyword and full performance metrics. The "
+                    "primary tool for finding wasted ad spend during an audit "
+                    "- use it early. Set only_zero_conversions=True to focus "
+                    "on terms that cost money but didn't convert (negative "
+                    "keyword candidates)."
+                ),
+                "handler": self.reporting_tools.list_search_terms,
+                "parameters": {
+                    "customer_id": {"type": "string", "required": True},
+                    "campaign_id": {"type": "string"},
+                    "ad_group_id": {"type": "string"},
+                    "date_range": {"type": "string", "default": "LAST_30_DAYS"},
+                    "min_impressions": {"type": "integer", "default": 1},
+                    "limit": {"type": "integer", "default": 200},
+                    "only_zero_conversions": {"type": "boolean", "default": False},
+                },
+            },
         }
         
     def _register_advanced_tools(self) -> Dict[str, Dict[str, Any]]:
